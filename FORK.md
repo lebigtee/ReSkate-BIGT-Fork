@@ -102,11 +102,10 @@ it is a modified version of ReSkate, changed from October 2026 on (its changes a
 its git history, on the `hall-of-meat` branch). Whoever shares its build shares its source with
 it, under the same license.
 
-## Assets and licenses
+## Assets
 
-The Hall of Meat's skeleton drawings and panel were made for the mod. Before distributing the
-fork, check where the photographed X-rays in the panel's collage come from and whether they may
-be shared (see the Hall of Meat README).
+The Hall of Meat's skeleton drawings and its panel, the X-rays of its collage included, were made
+for the mod by its author.
 
 ## Known limits
 

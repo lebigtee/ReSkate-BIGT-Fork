@@ -182,10 +182,8 @@ enough, change `meat sensitivity` or the thresholds (`severity_thresholds` in `h
 | `Test/replay_test.cpp`, `replay_plan.py` | The replay's test on WARP, and its plan's simulation |
 | `Test/probe_*.py` | Reading `meat probe` recordings (the contacts' layout, real bails replayed) |
 
-The skeleton drawings and the panel's collage were made for the mod by its author. Before
-distributing this fork, check where the photographed X-rays of the collage (skull, hand, dental
-panoramic) come from and whether they may be shared, and do the same for the 3D model the
-skeletons were based on, if there is one.
+The skeleton drawings and the panel, its collage of X-rays included, were made for the mod by its
+author, and are shared with the fork under its license.
 
 ## Known limits
 

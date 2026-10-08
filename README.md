@@ -1,5 +1,9 @@
 # ReSkate
 
+> **This is the Hall of Meat fork of ReSkate**, on the `hall-of-meat` branch. It adds the Hall of Meat
+> from skate 3, Death Races against AI riders or other fork players, and a camera light for night
+> clips, and still plays with official ReSkate players. See [FORK.md](FORK.md).
+
 play it offline, host your own lobbies and dedicated servers, and mod it.
 the launcher, the runtime that loads into the game, and the dedicated server.
 
