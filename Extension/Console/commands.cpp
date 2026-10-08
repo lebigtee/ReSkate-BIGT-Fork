@@ -226,6 +226,7 @@ const Commands &game_commands() {
         register_trainer_commands(*result);
         register_hall_of_meat_commands(*result);
         register_death_race_commands(*result);
+        register_camera_light_commands(*result);
         return result;
     }();
     return *registry;

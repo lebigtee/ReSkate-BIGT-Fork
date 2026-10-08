@@ -3,6 +3,7 @@
 #include "native_menu_dump.h"
 #include "native_throwdown_tile.h"
 #include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/CameraLight/camera_light.h"
 #include "Extension/DeathRace/death_race.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Engine/Core/Log/logging.h"
@@ -121,6 +122,7 @@ namespace {
 void refresh_hall_of_meat(State& s) {
     const auto meat = hall_of_meat::status();
     s.tools.hall_of_meat = {true, meat.enabled, meat.slowmo, meat.stutter};
+    s.tools.camera_light = {true, camera_light::enabled()};
     // The Death Race page's races and state, the same way.
     const auto race = death_race::status();
     auto& d = s.tools.death_race;

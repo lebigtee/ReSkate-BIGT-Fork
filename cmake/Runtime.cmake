@@ -121,6 +121,9 @@ add_library(dingosdk_runtime SHARED
     Extension/DeathRace/death_race.cpp
     Extension/DeathRace/death_race_riders.cpp
     Extension/DeathRace/death_race_commands.cpp
+    Extension/CameraLight/camera_light.cpp
+    Extension/CameraLight/camera_light_commands.cpp
+    Extension/CameraLight/camera_light_native.cpp
     Extension/HallOfMeat/hall_of_meat_commands.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp

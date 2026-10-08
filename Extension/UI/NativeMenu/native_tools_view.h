@@ -19,6 +19,8 @@ struct State {
     // The Hall of Meat's settings (Extension/HallOfMeat), copied in before each render and
     // activation; its rows stay locked until they are.
     struct HallOfMeat { bool available{}, on{}, slowmo{}, stutter{}; } hall_of_meat;
+    // The camera light's (Extension/CameraLight), the same way.
+    struct CameraLight { bool available{}, on{}; } camera_light;
     // The Death Race's (Extension/DeathRace), copied in the same way.
     struct DeathRace {
         struct Entry { std::string name; double best{}; std::size_t checkpoints{}; };
@@ -210,6 +212,8 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         if (command == "hall-of-meat") console(h.on ? "meat off" : "meat on", h.available);
         else if (command == "hall-of-meat-slowmo") console(std::string("meat slowmo ") + (h.slowmo ? "0" : "1"), h.available && h.on);
         else console(std::string("meat stutter ") + (h.stutter ? "0" : "1"), h.available && h.on);
+    } else if (command == "camera-light") {
+        console(s.camera_light.on ? "light off" : "light on", s.camera_light.available);
     } else if (command.starts_with("race-")) {
         const auto& d = s.death_race;
         const bool usable = d.available && d.ready;
@@ -328,6 +332,9 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         toggle(p.main, "hall-of-meat", "Hall of Meat", meat.on, meat.available && cb.queue_console_command);
         toggle(p.main, "hall-of-meat-slowmo", "Bail slow motion", meat.slowmo, meat.available && meat.on && cb.queue_console_command);
         toggle(p.main, "hall-of-meat-stutter", "Bail stutter", meat.stutter, meat.available && meat.on && cb.queue_console_command);
+        // A filmer's lamp on the camera: it lights the skater at night.
+        text(p.main, "camera-light-title", "CAMERA LIGHT");
+        toggle(p.main, "camera-light", "Camera light", s.camera_light.on, s.camera_light.available && cb.queue_console_command);
         text(p.side, "flight-title", "FREE FLIGHT");
         const auto speed = std::to_string(m.debug.camera_speed);
         button(p.side, "speed", "Flight speed: " + speed.substr(0, speed.find('.') + 2), "speed",
