@@ -6,6 +6,7 @@
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Settings/named_settings.h"
+#include "Extension/DeathRace/death_race.h"
 #include <Windows.h>
 #include <chrono>
 #include <cmath>
@@ -28,6 +29,14 @@ bool types_ready = true; // stands in for the event types of the level being fou
 std::uint64_t last_token{};
 }
 
+// A Death Race's side: the race the local drop `test_race_mmid` runs (test_race), and its AI riders.
+std::vector<std::uint8_t> test_race;
+std::uint32_t test_race_mmid{};
+namespace dingosdk::death_race {
+void throwdown_event(Throwdown, std::string_view, std::uint32_t) noexcept {}
+bool is_rider(std::uint32_t id) noexcept { return id > 0x3e0 && id <= 0x3e4; }
+std::vector<std::uint8_t> hosted_race(std::uint32_t mmid) noexcept { return mmid && mmid == test_race_mmid ? test_race : std::vector<std::uint8_t>{}; }
+} // namespace dingosdk::death_race
 namespace dingosdk {
 std::string change_named_setting(std::string_view name, std::string_view value, bool) {
     settings_changed[std::string(name)] = std::string(value);
@@ -780,6 +789,98 @@ void level_change_flow() {
 }
 } // namespace
 
+// A Death Race: offered under its own series (other ReSkate builds ignore it) with its flags in a
+// second offer; the AI riders are no other activity's; Jam scores are not relayed, a racer's score is
+// its finish; a racer quitting ends nothing; everyone in, it ends here.
+void race_flow() {
+    const ThrowdownRelayInput in{me, {{other, 5}}, true, 79};
+    tick(in);
+    test_race = {1, 2, 3, 4};
+    test_race_mmid = 0x77;
+    ThrowdownLocalAction exited{Local::exited};
+    exited.series = "JamSession"; exited.mmid = 0x77; exited.placement = {9}; exited.settings = {8};
+    throwdown_relay_local(std::move(exited));
+    auto out = tick(in);
+    check(out.size() == 2 && out[0].kind == Kind::offer && out[0].series == "DeathRace" && out[0].placement == std::vector<std::uint8_t>{9} &&
+              out[1].kind == Kind::offer && out[1].series == "DeathRaceFlags" && out[1].id == 0x77 && out[1].placement == test_race,
+          "A Death Race's drop was not offered under its own series with its race");
+    receive(other, make(Kind::join, me, 0x77));
+    tick(in);
+    check(throwdown_relay_hosted_joiners() == 1, "The race's host did not see the player who joined");
+    ThrowdownLocalAction entered{Local::entered};
+    entered.participants = {2, 0x305, 0x3e1}; // an AI rider still in the queue
+    throwdown_relay_local(std::move(entered));
+    out = tick(in);
+    check(out.size() == 1 && out[0].kind == Kind::start && out[0].order == std::vector<std::uint64_t>{me, other},
+          "An AI rider in the queue kept the race's start from the other players");
+    auto running = throwdown_relay_running_race();
+    check(running && running->leader == me && running->id == 0x77 && running->racers.size() == 2 &&
+              running->racers[0].local && running->racers[0].id == 2 && running->racers[1].player == other &&
+              running->racers[1].id == 0x305,
+          "The running race's racers are wrong");
+    ThrowdownLocalAction own{Local::score};
+    own.score = 300;
+    throwdown_relay_local(std::move(own));
+    out = tick(in);
+    check(out.empty(), "A Jam score was relayed in a race");
+    auto finish = make(Kind::score, me, 0x77);
+    finish.value = 61000;
+    receive(other, finish);
+    throwdown_relay_race_finished(60000);
+    out = tick(in);
+    check(out.size() == 1 && out[0].kind == Kind::score && out[0].value == 60000, "The local finish was not sent");
+    check(!find("score"), "A racer's finish became a Jam row");
+    running = throwdown_relay_running_race();
+    check(running && running->racers[1].finish == 61000, "Another racer's finish was not kept");
+    receive(other, make(Kind::leave, me, 0x77));
+    tick(in);
+    running = throwdown_relay_running_race();
+    check(running && running->racers[1].out && !find("destroy event"), "A racer quitting ended the race or was not seen");
+    throwdown_relay_end_race();
+    tick(in);
+    const auto *left = find("challenge leave");
+    const auto *ended = find("destroy event");
+    check(left && left->id == 2 && ended && ended->id == 0x305 && !throwdown_relay_running_race(),
+          "Everyone in, the race did not end as another racer");
+    test_race.clear();
+    end_session();
+
+    // Another player's race: its copy shows the race; started, the racers come leader first.
+    const ThrowdownRelayInput guest{me, {{leader, 3}}, true, 80};
+    tick(guest);
+    receive(leader, offer(leader, 0x99, "DeathRace"));
+    auto race = offer(leader, 0x99, "DeathRaceFlags");
+    race.placement = {7, 7};
+    race.settings.clear();
+    receive(leader, race);
+    tick(guest);
+    const auto *copy = find("spawn");
+    check(copy && copy->series == "JamSession" && copy->id == 0x303, "A Death Race's drop was not shown here as a Skate Jam");
+    throwdown_relay_spawned(last_token, 0x5656, 5);
+    tick(guest);
+    auto offers = throwdown_relay_race_offers();
+    check(offers.size() == 1 && offers[0].leader == leader && offers[0].race == race.placement && !offers[0].joined,
+          "Another player's race was not offered here");
+    local(Local::joined, 0x5656);
+    tick(guest);
+    offers = throwdown_relay_race_offers();
+    check(offers.size() == 1 && offers[0].joined, "Joining another player's race was not seen");
+    auto start = make(Kind::start, leader, 0x99);
+    start.order = {leader, me};
+    receive(leader, start);
+    tick(guest);
+    entered = {Local::entered};
+    entered.participants = {2, 0x303};
+    throwdown_relay_local(std::move(entered));
+    tick(guest);
+    running = throwdown_relay_running_race();
+    check(running && running->leader == leader && running->racers.size() == 2 && running->racers[0].player == leader &&
+              running->racers[0].id == 0x303 && running->racers[1].local,
+          "Another player's race did not run here with its leader first");
+    check(throwdown_relay_race_offers().empty(), "A started race was still offered");
+    end_session();
+}
+
 int main() {
     try {
         guest_flow();
@@ -791,7 +892,8 @@ int main() {
         challenge_flow();
         beacon_flow();
         level_change_flow();
-        std::cout << "Throwdown relay: guest, leader, removal, Spot Battle, S.K.A.T.E., last-player, coop challenge, party beacon and level change flows passed.\n";
+        race_flow();
+        std::cout << "Throwdown relay: guest, leader, removal, Spot Battle, S.K.A.T.E., last-player, coop challenge, party beacon, level change and Death Race flows passed.\n";
         return 0;
     } catch (const std::exception &e) {
         std::cerr << e.what() << '\n';

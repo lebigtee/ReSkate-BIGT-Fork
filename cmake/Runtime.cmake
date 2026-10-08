@@ -25,6 +25,7 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
     Extension/UI/NativeMenu/native_menu_dump.cpp
     Extension/UI/NativeMenu/native_hub.cpp
+    Extension/UI/NativeMenu/native_throwdown_tile.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
     Extension/Multiplayer/Remote/native_skater.cpp
     Extension/Multiplayer/Remote/native_skater_spawn.cpp
@@ -116,6 +117,11 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_commands.cpp
     Extension/Trainer/trainer_session.cpp
+    Extension/HallOfMeat/hall_of_meat.cpp
+    Extension/DeathRace/death_race.cpp
+    Extension/DeathRace/death_race_riders.cpp
+    Extension/DeathRace/death_race_commands.cpp
+    Extension/HallOfMeat/hall_of_meat_commands.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp
     Extension/Boot/offline_boot.cpp
@@ -222,6 +228,19 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
 endif()
+# The Hall of Meat's skeleton sheet and panel artwork (Extension/HallOfMeat/hall_of_meat_hud.cpp).
+set(dingosdk_hom_bones "${PROJECT_SOURCE_DIR}/Extension/HallOfMeat/assets/bones.png")
+set(dingosdk_hom_panel "${PROJECT_SOURCE_DIR}/Extension/HallOfMeat/assets/panel.png")
+file(TO_NATIVE_PATH "${dingosdk_hom_bones}" dingosdk_hom_bones_native)
+file(TO_NATIVE_PATH "${dingosdk_hom_panel}" dingosdk_hom_panel_native)
+string(REPLACE "\\" "\\\\" dingosdk_hom_bones_native "${dingosdk_hom_bones_native}")
+string(REPLACE "\\" "\\\\" dingosdk_hom_panel_native "${dingosdk_hom_panel_native}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc"
+    "HOM_BONES RCDATA \"${dingosdk_hom_bones_native}\"\n"
+    "HOM_PANEL RCDATA \"${dingosdk_hom_panel_native}\"\n")
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc" PROPERTIES OBJECT_DEPENDS
+    "${dingosdk_hom_bones};${dingosdk_hom_panel}")
+target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc")
 if(EXISTS "${dingosdk_startup_art}")
     file(TO_NATIVE_PATH "${dingosdk_startup_art}" dingosdk_startup_art_native)
     string(REPLACE "\\" "\\\\" dingosdk_startup_art_native "${dingosdk_startup_art_native}")

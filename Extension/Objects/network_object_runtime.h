@@ -16,6 +16,13 @@ bool clear_lobby_guest_objects();
 void set_remote_network_objects(std::string_view map, std::span<const NetworkObjectOwner> owners);
 void clear_remote_network_objects();
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch);
+// The Death Race's props (Extension/DeathRace): its start line, checkpoint flags and finish arch,
+// build-kit objects made like other players' copies (never saved to the local layout, gone with
+// the world) and removed once no longer in the list. Each id stays one object. Game thread;
+// call again now and then: a world change clears them, and this puts them back.
+void set_race_props(std::span<const NetworkObject> objects);
+// How many of them stand in the world now.
+std::size_t race_props_live();
 std::string network_object_status();
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).

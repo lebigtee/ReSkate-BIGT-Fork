@@ -181,12 +181,16 @@ void clear_input(const Context& context, const char* id) {
 }
 // Lists that scroll: every page's first main column, both columns of the
 // Current Session and Voice Chat sections, whose settings outgrow the screen,
-// and the Custom Maps list, which grows with every map in the Mods folder.
+// the Custom Maps list, which grows with every map in the Mods folder, and the
+// Player list, which the Hall of Meat rows outgrow, and the Death Race lists, which grow
+// with every race on the map.
 bool scrolling_list(unsigned page_slot, unsigned slot) {
     constexpr auto session = static_cast<unsigned>(Section::session) * 2, voice = static_cast<unsigned>(Section::voice) * 2;
     constexpr auto custom_maps = static_cast<unsigned>(native_tools::custom_section) * 2;
+    constexpr auto player = static_cast<unsigned>(native_tools::player_section) * 2;
+    constexpr auto races = static_cast<unsigned>(native_tools::death_race_section) * 2;
     return slot == 0 || (page_slot == 0 && (slot == session || slot == session + 1 || slot == voice || slot == voice + 1)) ||
-        (page_slot == menu_view::tools_page && slot == custom_maps);
+        (page_slot == menu_view::tools_page && (slot == custom_maps || slot == player || slot == races || slot == races + 1));
 }
 void publish_rows(const Context& context, Value list, unsigned slot, const std::vector<std::string>& visible) {
     if (!scrolling_list(state().slot, slot)) { publish_fixed(context, list, slot, visible); return; }

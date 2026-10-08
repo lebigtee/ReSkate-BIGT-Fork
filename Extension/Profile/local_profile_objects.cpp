@@ -1,6 +1,8 @@
 #include "runtime_internal.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
+#include "Extension/Objects/ParkEditor/park_editor_surface.h"
+#include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/World/local_world_layers.h"
 
 namespace dingosdk {
@@ -54,8 +56,38 @@ bool teleport_local_skater(const std::array<float, 3>& position) {
     for (const auto v : position)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
     r.position_teleport = position;
+    r.position_teleport_heading.reset();
     r.position_teleport_at = GetTickCount64();
     return true;
+}
+bool teleport_local_skater_facing(const std::array<float, 3>& position, float heading) {
+    if (!std::isfinite(heading) || !teleport_local_skater(position)) return false;
+    std::lock_guard lock(local_runtime().native_mutex);
+    placements_runtime().position_teleport_heading = heading;
+    return true;
+}
+WorldRayHit cast_world_ray(const std::array<float, 3>& from, const std::array<float, 3>& to) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    const auto& world = world_layers_runtime();
+    // The current client context is the calling thread's: only the update thread's is the client's.
+    if (!local_runtime().active || !r.context || cosmetic_runtime().update_thread != GetCurrentThreadId() ||
+        !world.model.ready || !world.context) return {};
+    for (int a = 0; a < 3; ++a)
+        if (!std::isfinite(from[a]) || !std::isfinite(to[a]) || std::abs(from[a]) > 100000 || std::abs(to[a]) > 100000)
+            return {};
+    static const auto api = editor::surface_api(local_runtime().base);
+    if (!api.ready) return {};
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    if (!context[0]) return {};
+    const auto physics = api.world(context[0]);
+    if (!physics) return {};
+    std::vector<editor::SurfaceBody> discovered;
+    const auto hit = editor::cast_surface_once(api, physics, from, to, nullptr, {}, nullptr, {}, discovered, nullptr);
+    WorldRayHit result{true, hit.has_value()};
+    if (hit) result.at = *hit;
+    return result;
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);

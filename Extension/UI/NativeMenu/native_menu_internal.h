@@ -26,8 +26,8 @@ constexpr std::uint32_t content = 0x716496c8, items = 0x61742cb4,
     our_key = 0x52534d50;
 constexpr std::size_t max_actions = 1024;
 enum class Section { browser, host, join, session, voice };
-// Most sections on any owned page: Multiplayer and Custom Stuff both have five.
-constexpr unsigned section_count = 5;
+// Most sections on any owned page: Multiplayer has five, Custom Stuff six.
+constexpr unsigned section_count = 6;
 static_assert(native_tools::sections.size() <= section_count);
 constexpr float main_width = 1800.f, side_width = 1080.f;
 constexpr Schema horizontal_panel{0xf0b42cc6, 104}, vertical_panel{0x4b60a61d, 96};

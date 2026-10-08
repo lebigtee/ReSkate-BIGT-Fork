@@ -53,6 +53,19 @@ std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFra
         return {};
     }
 }
+bool wear_cosmetic(std::uintptr_t base, std::uintptr_t local_entity, CosmeticRecipe &recipe, const std::string &asset) noexcept {
+    try {
+        const CosmeticMemory memory{readable, base};
+        const auto resource = memory.resource(memory.component(local_entity));
+        for (std::size_t i = 0; i < recipe.items.size(); ++i) {
+            const CosmeticSlot candidate{recipe.items[i].slot, asset, recipe.items[i].parameters};
+            if (!memory.item_installed(resource, i, candidate)) continue;
+            recipe.items[i].asset = asset;
+            return true;
+        }
+    } catch (...) {}
+    return false;
+}
 void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t local_entity,
                            const CosmeticRecipe &recipe) {
     const CosmeticMemory memory{readable, base};

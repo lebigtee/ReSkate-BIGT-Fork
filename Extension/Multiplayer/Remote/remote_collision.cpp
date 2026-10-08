@@ -225,7 +225,7 @@ bool local_allows_player_collision(std::uintptr_t base, std::uintptr_t entity) n
 }
 
 void update_remote_collision(std::uintptr_t base, std::uintptr_t context, const Pose &pose, bool solid,
-                             std::uint64_t now) noexcept {
+                             std::uint64_t now, const std::array<float, 3> *feet, float radius) noexcept {
     try {
         auto &s = slots().current();
         solid = solid && enabled.load(std::memory_order_relaxed);
@@ -252,10 +252,11 @@ void update_remote_collision(std::uintptr_t base, std::uintptr_t context, const 
             return;
         }
         if ((!s.skater.created || !s.board.created) && now >= s.retry_at) {
-            alignas(16) const float bottom[4]{0, proxy_bottom + proxy_radius, 0, 0}, top[4]{0, proxy_top - proxy_radius, 0, 0};
+            const float proxy = radius > 0.05f && radius < proxy_radius ? radius : proxy_radius;
+            alignas(16) const float bottom[4]{0, proxy_bottom + proxy, 0, 0}, top[4]{0, proxy_top - proxy, 0, 0};
             // Along the deck: the skateboard's length is its local Z (the truck positions' axis).
             alignas(16) const float back[4]{0, 0.08f, -0.3f, 0}, front[4]{0, 0.08f, 0.3f, 0};
-            if ((!s.skater.created && !create_part(n, world, s.skater, bottom, top, proxy_radius)) ||
+            if ((!s.skater.created && !create_part(n, world, s.skater, bottom, top, proxy)) ||
                 (!s.board.created && !create_part(n, world, s.board, back, front, 0.12f))) {
                 s.retry_at = now + 5000000;
                 if (failures++ < 5)
@@ -264,7 +265,7 @@ void update_remote_collision(std::uintptr_t base, std::uintptr_t context, const 
             }
         }
         // Upright at the skater's root, as retail's proxy stands.
-        if (s.skater.created) move_part(n, s.skater, pose.root.position, {0, 0, 0, 1}, now);
+        if (s.skater.created) move_part(n, s.skater, feet ? *feet : pose.root.position, {0, 0, 0, 1}, now);
         if (s.board.created) {
             if (pose.board.empty()) switch_off(n, s.board);
             else move_part(n, s.board, pose.board.front().position, pose.board.front().rotation, now);

@@ -18,6 +18,7 @@ using ChooseState = std::uint32_t (*)(std::uintptr_t, std::uint32_t);
 using SkeletonResponse = void (*)(std::uintptr_t, float, bool);
 using PublishAnimation = void (*)(std::uintptr_t);
 using ResetCauses = void (*)(std::uintptr_t);
+using MarkerTeleport = void (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 constexpr std::uintptr_t highest = memory::highest_user_address;
 // The hooks re-resolve the local skater's ownership (some 35 fields) on every
 // protected physics step: guarded same-process copies, not a system call each.
@@ -47,10 +48,17 @@ struct BoardLock {
     Owner owner;
     std::uint64_t until{};
 };
+// A knock to the local skater (Death Race: an AI rider ran into it), taken on its next riding
+// physics step before this time.
+struct Knock {
+    Owner owner;
+    std::uint64_t until{};
+};
 struct Protection {
     std::uintptr_t base{};
     bool mount_test{}; // the selector's mount request test is the known one
     BoardLock board;
+    Knock knock;
     RecordCause cause_original{};
     ChooseState choose_original{};
     SkeletonResponse skeleton_original{};
@@ -130,6 +138,15 @@ bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) no
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+bool raise_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
+    const auto address = context + offset;
+    if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
+        (address & (alignof(LONG) - 1)) != 0) return false;
+    __try {
+        _InterlockedOr(reinterpret_cast<volatile LONG*>(address), mask);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 bool cancel_impact_request(std::uintptr_t context) noexcept {
     return cancel_request(context, impact_request_offset, impact_request_mask);
 }
@@ -185,10 +202,32 @@ void hold_off_board(std::uintptr_t selector, std::uint32_t current) noexcept {
     if (!resolve(board.owner.client, board.owner.entity, current_owner) || current_owner != board.owner) return;
     (void)cancel_request(current_owner.context, animation_request_offset, mount_request_mask);
 }
+// A knock waiting for this selector, while the skater rides (ground, air or grind) and nothing
+// protects it: what the native collision producers do (impact_bail_calls), the impact request
+// and then its cause, just before the selector reads them.
+void take_knock(std::uintptr_t selector, std::uint32_t current) noexcept {
+    auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire)) return;
+    AcquireSRWLockShared(&p.lock);
+    const auto knock = p.knock;
+    const auto lease = p.lease;
+    ReleaseSRWLockShared(&p.lock);
+    const auto now = GetTickCount64();
+    if (now >= knock.until || selector != knock.owner.selector || lease.active(now) ||
+        !((current >= 100 && current < 300) || (current >= 400 && current < 500))) return;
+    Owner owner;
+    if (!resolve(knock.owner.client, knock.owner.entity, owner) || owner != knock.owner) return;
+    AcquireSRWLockExclusive(&p.lock);
+    p.knock = {};
+    ReleaseSRWLockExclusive(&p.lock);
+    if (raise_request(owner.context, impact_request_offset, impact_request_mask))
+        p.cause_original(owner.causes, impact_bail_calls[0].reason, 0.0f);
+}
 std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     {
         LastError error;
         hold_off_board(selector, current);
+        take_knock(selector, current);
     }
     // Clear shared requests before selection so native ground/air/walking
     // transitions can still run. Some contact tests return Wipeout directly;
@@ -249,6 +288,22 @@ void publish_animation(std::uintptr_t core) {
     (void)filter_requests(core, &Owner::core);
     protection().publish_original(core);
     filter_contact_animation(core);
+}
+// The session marker's teleport, refused while a Death Race runs (the published lock lapses if
+// ticks stop arriving).
+struct MarkerGuard {
+    MarkerTeleport original{};
+    std::atomic<std::uint64_t> until{}, refused{};
+    std::atomic<bool> ready{};
+};
+MarkerGuard& marker_guard() { static auto* value = new MarkerGuard; return *value; }
+void marker_teleport(std::uintptr_t component, std::uintptr_t transform, std::uintptr_t reason, std::uintptr_t options) {
+    auto& g = marker_guard();
+    if (GetTickCount64() < g.until.load(std::memory_order_acquire)) {
+        g.refused.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g.original(component, transform, reason, options);
 }
 bool compatible(std::uintptr_t base) noexcept {
     if (base < 0x10000 || base > highest - supported_build::game_image_size) return false;
@@ -337,6 +392,43 @@ bool start_no_bail(std::uintptr_t base) noexcept {
     return false;
 }
 bool no_bail_available() noexcept { return protection().ready.load(std::memory_order_acquire); }
+bool start_session_marker_guard(std::uintptr_t base) noexcept {
+    LastError error;
+    try {
+        auto& g = marker_guard();
+        if (g.ready.load()) return true;
+        std::array<unsigned char, 32> actual{};
+        if (base < 0x10000 || base > highest - supported_build::game_image_size ||
+            !read(base + session_marker_teleport_contract.rva, actual) || actual != session_marker_teleport_contract.bytes) {
+            logging::write(logging::Level::warning, logging::Channel::skater,
+                "Session marker guard is unavailable: the native teleport did not match.");
+            return false;
+        }
+        auto* target = reinterpret_cast<void*>(base + session_marker_teleport_contract.rva);
+        void* original{};
+        auto status = hook_prepare(target, reinterpret_cast<void*>(&marker_teleport), &original);
+        if (status == HookOk && original) {
+            g.original = reinterpret_cast<MarkerTeleport>(original);
+            status = hook_enable(target);
+            if (status == HookOk) {
+                g.ready.store(true, std::memory_order_release);
+                logging::write(logging::Level::info, logging::Channel::skater,
+                    "Session marker guard ready: a Death Race refuses the d-pad's way back to the start.");
+                return true;
+            }
+        }
+        logging::log(logging::Level::warning, logging::Channel::skater,
+            "Session marker guard hook setup failed (status {}).", static_cast<LONG>(status));
+        (void)hook_remove(target);
+    } catch (...) {}
+    return false;
+}
+void block_session_marker_teleports(bool blocked) noexcept {
+    marker_guard().until.store(blocked ? GetTickCount64() + 500 : 0, std::memory_order_release);
+}
+std::uint64_t refused_session_marker_teleports() noexcept {
+    return marker_guard().refused.load(std::memory_order_relaxed);
+}
 bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
     bool flying, std::uint64_t flight_expires) noexcept {
     LastError error;
@@ -384,6 +476,23 @@ void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked
     // board again. Once the skater resolves, outside a teleport.
     Owner owner;
     if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) rearm = false;
+}
+bool keep_teleports_on_board(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    LastError error;
+    if (!protection().ready.load(std::memory_order_acquire)) return false;
+    Owner owner;
+    return resolve(client, entity, owner) && set_teleport_on_board(owner.component);
+}
+bool knock_local_skater(std::uintptr_t client, std::uintptr_t entity) noexcept {
+    LastError error;
+    auto& p = protection();
+    Knock next;
+    if (!p.ready.load(std::memory_order_acquire) || !resolve(client, entity, next.owner)) return false;
+    next.until = GetTickCount64() + 300;
+    AcquireSRWLockExclusive(&p.lock);
+    p.knock = next;
+    ReleaseSRWLockExclusive(&p.lock);
+    return true;
 }
 void clear_no_bail() noexcept {
     auto& p = protection();

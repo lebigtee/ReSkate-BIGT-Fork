@@ -26,7 +26,8 @@ struct Create {
 };
 struct State {
     std::string map, status;
-    std::map<Key, profile::PlacedObject> desired;
+    // What should stand: the other players' objects (remote) and the Death Race's props, together.
+    std::map<Key, profile::PlacedObject> desired, remote, props;
     std::map<Key, Live> live;
     std::set<Key> dirty;
     std::optional<Create> creating;
@@ -62,6 +63,20 @@ void refresh_budget() {
         if (!s.desired.contains(create.key) && !s.live.contains(create.key)) ++count;
     }
     extra_budget.store(static_cast<std::uint32_t>(count), std::memory_order_release);
+}
+// desired = remote + props. Objects whose target changed are moved; failures of objects no
+// longer wanted are forgotten.
+void apply_desired(State &s) {
+    auto merged = s.remote;
+    for (const auto &[key, object] : s.props) merged.emplace(key, object);
+    for (const auto &[key, object] : merged) {
+        const auto found = s.live.find(key);
+        if (found != s.live.end() && found->second.applied != object)
+            s.dirty.insert(key);
+    }
+    std::erase_if(s.failed_creates, [&](const auto &key) { return !merged.contains(key); });
+    s.desired = std::move(merged);
+    refresh_budget();
 }
 } // namespace network_objects_detail
 std::uint32_t network_object_extra_budget() noexcept {
@@ -326,13 +341,13 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
                 if (total == max_remote_objects) break;
                 ++total;
                 if (!same) continue;
-                const auto found = s.desired.find({owner.owner, owner.epoch, object.id});
-                same = found != s.desired.end() && found->second.id == object.id && found->second.item == object.item &&
+                const auto found = s.remote.find({owner.owner, owner.epoch, object.id});
+                same = found != s.remote.end() && found->second.id == object.id && found->second.item == object.item &&
                        found->second.position == object.position && found->second.rotation == object.rotation &&
                        found->second.scale == object.scale;
             }
         }
-        if (same && total == s.desired.size() &&
+        if (same && total == s.remote.size() &&
             std::all_of(s.failed_creates.begin(), s.failed_creates.end(),
                         [&](const auto &key) { return s.desired.contains(key); }))
             return;
@@ -355,34 +370,56 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
     }
     std::lock_guard lock(local_runtime().native_mutex);
     auto &s = network_objects_detail::state();
-    for (const auto &[key, object] : desired) {
-        const auto found = s.live.find(key);
-        if (found != s.live.end() && found->second.applied != object)
-            s.dirty.insert(key);
-    }
-    std::erase_if(s.failed_creates, [&](const auto &key) { return !desired.contains(key); });
     s.map = map;
-    s.desired = std::move(desired);
-    network_objects_detail::refresh_budget();
+    s.remote = std::move(desired);
+    network_objects_detail::apply_desired(s);
 }
 void clear_remote_network_objects() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
     auto &s = profile_runtime::network_objects_detail::state();
-    s.desired.clear(); // Retain live handles until native deletion is acknowledged.
+    s.remote.clear(); // Retain live handles until native deletion is acknowledged.
     s.dirty.clear();
-    profile_runtime::network_objects_detail::refresh_budget();
+    profile_runtime::network_objects_detail::apply_desired(s);
 }
 void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch) {
     if (!owner || !epoch)
         return;
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
     auto &s = profile_runtime::network_objects_detail::state();
-    std::erase_if(s.desired, [&](const auto &row) {
+    std::erase_if(s.remote, [&](const auto &row) {
         return std::get<0>(row.first) == owner && std::get<1>(row.first) == epoch;
     });
     std::erase_if(s.dirty,
                   [&](const auto &key) { return std::get<0>(key) == owner && std::get<1>(key) == epoch; });
-    profile_runtime::network_objects_detail::refresh_budget();
+    profile_runtime::network_objects_detail::apply_desired(s);
+}
+// The Death Race's props are one more owner, which no Steam ID can be.
+constexpr std::uint64_t race_props_owner = 0x5241434550524f50ULL; // "RACEPROP"
+void set_race_props(std::span<const NetworkObject> objects) {
+    using namespace profile_runtime;
+    std::map<network_objects_detail::Key, profile::PlacedObject> props;
+    for (const auto &object : objects) {
+        profile::PlacedObject placed{object.id, object.item, object.position, object.rotation, object.scale};
+        if (!object.id || !profile::valid_placed_object(placed)) return;
+        props.emplace(network_objects_detail::Key{race_props_owner, 1, object.id}, std::move(placed));
+    }
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &s = network_objects_detail::state();
+    // Playing alone, no session names the world the objects belong to: it is this one.
+    const auto &world = placements_runtime().map;
+    const bool moved = s.remote.empty() && !world.empty() && s.map != world;
+    if (moved) s.map = world;
+    if (!moved && props == s.props) return;
+    s.props = std::move(props);
+    network_objects_detail::apply_desired(s);
+    network_objects_detail::creates_pending.store(true, std::memory_order_release);
+}
+std::size_t race_props_live() {
+    std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
+    const auto &s = profile_runtime::network_objects_detail::state();
+    return static_cast<std::size_t>(std::count_if(s.live.begin(), s.live.end(), [](const auto &row) {
+        return std::get<0>(row.first) == race_props_owner && !row.second.delete_sent;
+    }));
 }
 std::string network_object_status() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);

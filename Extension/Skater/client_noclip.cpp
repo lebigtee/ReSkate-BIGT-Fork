@@ -303,10 +303,53 @@ void trainer_push_speed(std::uintptr_t core) noexcept {
         }
     } catch (...) {}
 }
+// A Death Race run-in: a velocity added once to every body of the local skater (as a boost is),
+// on its next physics step; it lapses after half a second, or as the skater teleports.
+struct Nudge {
+    std::atomic<bool> pending{};
+    std::uintptr_t client{}, entity{}, core{};
+    ULONGLONG expires{};
+    std::array<float, 3> velocity{};
+};
+Nudge& nudge() { static auto* value = new Nudge; return *value; }
+void apply_nudge(std::uintptr_t core) noexcept {
+    auto& n = nudge();
+    if (!n.pending.load(std::memory_order_acquire) || n.core != core) return;
+    SourceLastError error;
+    auto& state = source_state();
+    if (!state.initialized.load(std::memory_order_acquire) || state.busy.test_and_set(std::memory_order_acquire)) return;
+    SourceBusyScope scope{state.busy};
+    n.pending.store(false, std::memory_order_release);
+    try {
+        if (GetTickCount64() >= n.expires) return;
+        const auto bodies = debug_noclip_bodies(state.trial.base, n.client, n.entity);
+        if (bodies.core != core || state.trial.debug.noclip) return;
+        SourceReader reader;
+        if (reader.value<std::uint8_t>(n.entity, 0x7e0) != 0) return; // a teleport under way
+        std::array<std::array<float, 3>, 32> velocities{};
+        std::array<std::uint32_t, 32> flags{};
+        const auto count = std::min<std::size_t>(bodies.parts.size(), velocities.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
+            flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                velocities[i][axis] += n.velocity[axis];
+                if (!std::isfinite(velocities[i][axis]) || std::abs(velocities[i][axis]) > 100000) return;
+            }
+        }
+        reader.verify();
+        // Like the native velocity writers: XYZ at +70 and the dirty bit 8 at +60.
+        for (std::size_t i = 0; i < count; ++i) {
+            body_write(bodies.parts[i] + 0x70, velocities[i]);
+            body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
+        }
+    } catch (...) {}
+}
 void noclip_physics_update(std::uintptr_t core) {
     const auto original = source_state().velocity_update_original.load(std::memory_order_acquire);
     if (original) original(core);
     noclip_apply_velocity(core);
+    apply_nudge(core);
     trainer_apply_jump_scale(core);
     trainer_push_speed(core);
 }
@@ -386,6 +429,25 @@ bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor
         j.expires = GetTickCount64() + 150;
         j.outcome.store(0);
         j.pending.store(true, std::memory_order_release);
+        return true;
+    } catch (...) { return false; }
+}
+bool nudge_local_skater(std::uintptr_t client, std::uintptr_t entity, const std::array<float, 3>& velocity) noexcept {
+    SourceLastError error;
+    try {
+        auto& state = source_state();
+        auto& n = nudge();
+        if (!state.initialized.load(std::memory_order_acquire) || !state.velocity_guard_active.load(std::memory_order_acquire) ||
+            n.pending.load(std::memory_order_acquire)) return false;
+        for (const auto v : velocity)
+            if (!std::isfinite(v) || std::abs(v) > 30) return false;
+        const auto bodies = debug_noclip_bodies(state.trial.base, client, entity);
+        n.client = client;
+        n.entity = entity;
+        n.core = bodies.core;
+        n.velocity = velocity;
+        n.expires = GetTickCount64() + 500;
+        n.pending.store(true, std::memory_order_release);
         return true;
     } catch (...) { return false; }
 }

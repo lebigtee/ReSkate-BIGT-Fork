@@ -43,6 +43,9 @@ bool prepare_throwdown_injection() noexcept;
 bool queue_throwdown_spawn(std::uint64_t token, std::uint32_t host, const std::string &series,
                            const std::vector<std::uint8_t> &placement, const std::vector<std::uint8_t> &settings) noexcept;
 bool queue_throwdown_add(std::uint32_t player, const std::string &series, std::uint32_t mmid) noexcept;
+// A Death Race's AI rider joins the local player's queue `mmid` as virtual participant `player`
+// (its UI lookups answer with the local record, as for the lab's own).
+bool add_throwdown_rider(std::uint32_t player, const std::string &series, std::uint32_t mmid) noexcept;
 bool queue_throwdown_remove(std::uint32_t player) noexcept; // RemoveParticipantFromCommunityEvent as `player`
 bool queue_throwdown_start(const std::string &series, std::uint32_t mmid) noexcept;
 bool queue_throwdown_destroy(std::uint32_t mmid) noexcept;

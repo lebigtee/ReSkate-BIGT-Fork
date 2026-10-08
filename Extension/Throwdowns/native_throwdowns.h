@@ -11,6 +11,15 @@ void initialize_native_throwdowns(std::uintptr_t base) noexcept;
 // backend's client_strings_v1 fills, once the string database is loaded. Rechecked every
 // 2 s, since a language change or a backend refresh clears that store.
 void apply_throwdown_strings(std::uintptr_t base) noexcept;
+// Game thread, every client tick: while `death_race` (a Death Race carried by a Skate Jam is
+// being opened or run, Extension/DeathRace), the Skate Jam's title and description read as the
+// Death Race's, through the same store; the game's own text is put back after.
+void dress_death_race_strings(std::uintptr_t base, bool death_race) noexcept;
+// For the next `milliseconds`, no leave confirmation reaches the local player: a Death Race ends
+// its throwdown by having the local player leave it, and shows its own result instead of the
+// game's "you left" message.
+void quiet_leave_confirmations(unsigned milliseconds) noexcept;
+
 // True while a client ThrowdownRegistration graph is asking IsOnline (0) or
 // IsSessionReady (1) in hosted offline play. Every other graph stays native.
 bool native_throwdown_ready(unsigned predicate) noexcept;

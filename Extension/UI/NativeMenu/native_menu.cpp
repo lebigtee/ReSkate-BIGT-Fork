@@ -1,6 +1,9 @@
 #include "native_menu.h"
 #include "native_menu_internal.h"
 #include "native_menu_dump.h"
+#include "native_throwdown_tile.h"
+#include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/DeathRace/death_race.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
@@ -114,6 +117,22 @@ Value make(const Context& context, Schema schema) {
 }
 } // namespace native_menu_detail
 namespace {
+// The Hall of Meat's settings for its rows on the tools page: same client thread as its tick.
+void refresh_hall_of_meat(State& s) {
+    const auto meat = hall_of_meat::status();
+    s.tools.hall_of_meat = {true, meat.enabled, meat.slowmo, meat.stutter};
+    // The Death Race page's races and state, the same way.
+    const auto race = death_race::status();
+    auto& d = s.tools.death_race;
+    d.available = true;
+    d.ready = race.ready;
+    d.races.clear();
+    for (const auto& r : race.races) d.races.push_back({r.name, r.best, r.checkpoints.size()});
+    d.selected = race.selected;
+    d.building = race.building;
+    d.draft_points = race.draft_points;
+    d.racing = race.phase == death_race::Phase::countdown || race.phase == death_race::Phase::racing;
+}
 void render(const Context& context, const MultiplayerModel& model) {
     auto& s = state();
     ++s.pass;
@@ -128,8 +147,9 @@ void render(const Context& context, const MultiplayerModel& model) {
         publish_rows(context, list, slot, visible);
     };
     if (s.slot == tools_page) {
+        refresh_hall_of_meat(s);
         const auto selected = read<int>(context.address(context.path(s.page, {content, 0x18f8355b})));
-        if (selected >= 0 && selected < static_cast<int>(section_count)) s.section = static_cast<Section>(selected);
+        if (selected >= 0 && selected < static_cast<int>(s.section_total)) s.section = static_cast<Section>(selected);
         for (unsigned i = 0; i < native_tools::sections.size(); ++i) {
             const auto view = native_tools::render(s.tools, s.tools_model, s.tools_callbacks, i);
             publish(view.main, s.lists[i], i * 2, main_width);
@@ -148,7 +168,7 @@ void render(const Context& context, const MultiplayerModel& model) {
         context.set(context.path(s.page, {content, 0x18f8355b}), static_cast<int>(s.section));
     } else {
         const auto selected = read<int>(context.address(context.path(s.page, {content, 0x18f8355b})));
-        if (selected >= 0 && selected < static_cast<int>(section_count)) s.section = static_cast<Section>(selected);
+        if (selected >= 0 && selected < static_cast<int>(s.section_total)) s.section = static_cast<Section>(selected);
     }
     s.was_active = model.active;
     // The browser coming into view (the game menu opening, or switching to it)
@@ -161,7 +181,7 @@ void render(const Context& context, const MultiplayerModel& model) {
     }
     // Populate every section before it can be shown; tab switches never wait for
     // the next model polling interval to create their controls.
-    for (unsigned i = 0; i < section_count; ++i) render_section(context, model, static_cast<Section>(i));
+    for (unsigned i = 0; i < s.section_total; ++i) render_section(context, model, static_cast<Section>(i));
 }
 void ensure_body(const Context& context) {
     auto& s = state();
@@ -558,6 +578,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             { std::lock_guard pending_lock(s.mutex); requests.swap(s.pending); }
             if (!requests.empty() || now >= s.next_render)
                 s.tools_callbacks.read_model(s.tools_callbacks.user, s.tools_model);
+            if (!requests.empty()) refresh_hall_of_meat(s);
             for (const auto& request : requests) if (request.generation == s.generation.load()) {
                 // The card name field can only be read under the model lock below.
                 if (request.command == "card-name" || request.command == "card-name-reset") card_request = request.command;
@@ -716,6 +737,8 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
 }
 void native_menu_before_level_transition(std::uintptr_t base, unsigned next) noexcept {
     lifetime.before_transition(next, [&] {
+        // The Death Race tile's models reference the mode select's widget assets too.
+        release_throwdown_tile(base);
         // Both shutdown and multiplayer pause dumps fault in the engine
         // while destroying a 0x590-byte menu item with an unloaded widget asset.
         // Native level/sublevel exits bypass ReSkate's explicit load scheduler.
@@ -732,6 +755,7 @@ void native_menu_before_level_transition(std::uintptr_t base, unsigned next) noe
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     run_pending_ui_dump(base);
     if (lifetime.blocked()) return;
+    if (!loading) tick_throwdown_tile(base);
     for (unsigned slot = 0; slot < page_count; ++slot) {
         current_state = &page_state(slot);
         current_state->slot = slot;

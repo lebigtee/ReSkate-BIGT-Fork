@@ -11,6 +11,7 @@
 #include "Engine/Game/Build/20260929/native_throwdowns.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
+#include "Extension/DeathRace/death_race.h"
 #include "native_throwdowns.h"
 #include "throwdown_relay.h"
 #include "throwdown_debug_text.h"
@@ -44,6 +45,8 @@ namespace engine = addr::engine;
 namespace throwdowns = addr::native_throwdowns;
 constexpr std::uint32_t client_realm = 0xbf0f9789, server_realm = 0x98be5555;
 
+// Metres of zone radius a bounds scale of 1 is taken to give (at least): its scale is set from it.
+constexpr float death_race_zone_unit = 10.0f;
 // Runtime event hashes (== EBX TypeNameHash for events) and field NameHashes. MMId
 // is hashed case-insensitively: MMID, MMid, MMId and Mmid all share one hash.
 constexpr std::uint32_t event_create = 0x7fac81bb, event_update = 0xb025c7fc, event_host_set = 0x9c8de5a9,
@@ -1629,6 +1632,58 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
     }
     if (hash != event_create && hash != event_update && hash != event_host_set && hash != event_add_participant &&
         hash != event_force_start && hash != event_destroy) return;
+    // A Death Race's zone (the wall a throwdown keeps its players in) takes in its whole course.
+    if ((hash == event_update || hash == event_host_set) && death_race::setting_up()) {
+        try {
+            if (const auto p = find_field(type, field_params); p && p->kind == kind_struct) {
+                const auto at = payload + p->offset;
+                const auto spawn = find_field(p->type, field_spawn);
+                const auto scale = find_field(p->type, field_bounds_scale);
+                std::array<float, 3> flag{};
+                if (spawn && spawn->size >= 12 && scale && scale->size == 4 && memory::read(at + spawn->offset, flag) &&
+                    (flag[0] != 0 || flag[2] != 0)) {
+                    auto *bounds = reinterpret_cast<float *>(at + scale->offset);
+                    const auto reach = death_race::zone_reach(flag);
+                    // The zone at scale 1 reaches some ten metres or more: a scale of a tenth of the
+                    // reach always takes the course in.
+                    const auto wanted = std::clamp(reach / death_race_zone_unit, 1.0f, 1000.0f);
+                    if (reach > 0 && std::isfinite(*bounds) && *bounds < wanted) {
+                        logging::log(logging::Level::info, logging::Channel::progression,
+                            "Death Race: the throwdown's zone scale {:.2f} becomes {:.2f} (the course reaches {:.0f} m).", *bounds, wanted, reach);
+                        *bounds = wanted;
+                    }
+                }
+            }
+        } catch (...) {}
+    }
+    // A Death Race's setup page turns the players slider into its AI riders (native_throwdown_tile.cpp):
+    // the players limit the host sends is the race's own.
+    if (hash == event_host_set && death_race::setting_up()) {
+        try {
+            if (const auto p = find_field(type, field_params); p && p->kind == kind_struct)
+                if (const auto f = find_field(p->type, field_max_players); f && f->size == 4) {
+                    auto* players = reinterpret_cast<std::uint32_t*>(payload + p->offset + f->offset);
+                    // Alone with no AI rider, nobody else can come: with one player the host fills the
+                    // queue alone and the race starts at once. Otherwise the AI riders join it.
+                    const auto out = death_race::riders() == 0 && !multiplayer_session_active()
+                                         ? 1U
+                                         : static_cast<std::uint32_t>(death_race::queue_players());
+                    logging::log(logging::Level::info, logging::Channel::progression,
+                        "Death Race: the setup sent {} players (the AI riders slider); {} go out.", *players, out);
+                    *players = out;
+                }
+            // Its timer too: as long as a Jam lasts (the setup page shows no Duration); the race
+            // ends its throwdown when everyone has crossed the line.
+            if (const auto p = find_field(type, field_params); p && p->kind == kind_struct)
+                if (const auto f = find_field(p->type, field_duration); f && f->size == 4) {
+                    auto* duration = reinterpret_cast<std::uint32_t*>(payload + p->offset + f->offset);
+                    const auto limit = static_cast<std::uint32_t>(death_race::throwdown_seconds());
+                    logging::log(logging::Level::info, logging::Channel::progression,
+                        "Death Race: the throwdown's timer {} s becomes {} s (the race ends when everyone is in).", *duration, limit);
+                    *duration = limit;
+                }
+        } catch (...) {}
+    }
     try {
         std::string series; std::uint32_t mmid{};
         std::vector<std::uint8_t> params; std::string note;
@@ -2022,6 +2077,11 @@ bool queue_throwdown_add(std::uint32_t player, const std::string& series, std::u
         job.series = series; job.mmid = mmid;
         return queue_relay_job(std::move(job), event_add_ai);
     } catch (...) { return false; }
+}
+bool add_throwdown_rider(std::uint32_t player, const std::string& series, std::uint32_t mmid) noexcept {
+    if (!player || !mmid) return false;
+    try { remember_player(player); } catch (...) { return false; }
+    return queue_throwdown_add(player, series, mmid);
 }
 bool queue_throwdown_remove(std::uint32_t player) noexcept {
     return player && queue_relay_job({Job::Kind::remove, player}, event_remove_participant);

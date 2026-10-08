@@ -131,4 +131,42 @@ bool challenge_invites() noexcept;
 // The console's switch for that (on by default).
 void set_throwdown_offboard(bool enabled) noexcept;
 bool throwdown_offboard_enabled() noexcept;
+
+// Death Races (Extension/DeathRace) ride on a Jam drop: its leader sends the race with the drop,
+// every machine runs it on its own copy, and each racer's finish reaches the others, who all rank
+// them the same way (their Jam scores are not relayed then). Game thread (the client tick).
+struct RaceOffer {
+    std::uint64_t leader{};
+    std::uint32_t id{};
+    std::string leader_name;
+    std::vector<std::uint8_t> race; // as death_race.cpp encoded it
+    bool joined{};                  // the local player is in its queue here
+};
+// Other players' races on offer in this world (their drops shown here, not started yet).
+std::vector<RaceOffer> throwdown_relay_race_offers();
+struct RaceRacer {
+    std::uint64_t player{}; // Steam ID
+    std::uint32_t id{};     // their server id here (0: none)
+    std::string name;
+    bool local{}, out{};    // out: quit, or left the session
+    std::int32_t finish{};  // milliseconds after their go (0: not yet; never the local player's own)
+};
+struct RunningRace {
+    std::uint64_t leader{};
+    std::uint32_t id{};
+    std::vector<RaceRacer> racers; // the leader first, then by Steam ID: the same order everywhere
+};
+// The running linked throwdown, when it is a race.
+std::optional<RunningRace> throwdown_relay_running_race();
+// The local player crossed the line `ms` after its go: the other racers are told.
+void throwdown_relay_race_finished(std::int32_t ms) noexcept;
+// Everyone is in: the running race ends here as a Death Race ends alone (the local player leaves
+// its copy, which then ends as one of the others). On the relay's next tick.
+void throwdown_relay_end_race() noexcept;
+// Real players in the local player's open drop (a Death Race's AI riders step aside for them).
+std::size_t throwdown_relay_hosted_joiners() noexcept;
+// Other players are in the session: throwdowns are linked (the leader starts them).
+bool throwdown_relay_linked() noexcept;
+// Something else changed the queue start timer setting: the relay sets its own again.
+void throwdown_relay_queue_timer_changed() noexcept;
 } // namespace dingosdk::multiplayer

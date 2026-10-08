@@ -70,6 +70,16 @@ bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token);
 // Teleports the local skater to a world position (sent within 5 s, when the skater can be
 // moved). False when the game's teleport is unavailable.
 bool teleport_local_skater(const std::array<float, 3>& position);
+// The same, facing `heading` (degrees about the up axis; 0 faces +Z, as the trainer reports it).
+bool teleport_local_skater_facing(const std::array<float, 3>& position, float heading);
+// A ray through the game's own collision world (what the park editor drops objects on: the
+// ground, buildings, props, skaters), on the game update thread. `cast` is false when the world
+// cannot be asked; otherwise `hit` and where it first struck.
+struct WorldRayHit {
+    bool cast{}, hit{};
+    std::array<float, 3> at{};
+};
+WorldRayHit cast_world_ray(const std::array<float, 3>& from, const std::array<float, 3>& to);
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

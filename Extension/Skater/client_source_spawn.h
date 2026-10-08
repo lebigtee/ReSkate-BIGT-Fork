@@ -25,6 +25,10 @@ JumpScaleResult take_jump_scale_result() noexcept;
 // rolling skater that is not braking gains speed up to it (m/s). Publish every client tick: it
 // expires after 500 ms.
 void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, float stock, float cruise) noexcept;
+// Death Race run-ins: adds `velocity` (m/s, world axes) to the local skater at its next physics
+// update, once (a shove from a rider). False when one is already waiting, or the skater's
+// physics cannot be resolved.
+bool nudge_local_skater(std::uintptr_t client, std::uintptr_t entity, const std::array<float, 3>& velocity) noexcept;
 // Engine-thread-only interactive controls. Presentation callbacks only queue requests.
 overlay::DebugModel on_client_debug_tick(std::uintptr_t base, std::uintptr_t client,
     bool can_control, bool camera_phase_observed, const overlay::DebugRequest* request = nullptr,

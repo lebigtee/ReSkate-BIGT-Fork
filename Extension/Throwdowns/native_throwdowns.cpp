@@ -2,10 +2,13 @@
 #include "throwdown_lab.h"
 #include "throwdown_relay.h"
 #include "virtual_player_names.h"
+#include "Extension/DeathRace/death_race.h"
+#include "Extension/UI/NativeMenu/native_throwdown_tile.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/Objects/local_buildkit_labels.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -99,6 +102,8 @@ bool mode_available_hook(const char* const* mode) {
             if (!memory::peek(text + i, id[i]) || !id[i]) break;
         const std::string_view name(id.data());
         const bool known = name == "JamSession" || name == "SpotBattle" || name == "ThrowdownSkate";
+        // The mode select is filling its tiles: the Death Race tile joins them.
+        if (known) throwdown_mode_select_opened();
         static std::atomic<unsigned> logged{};
         if (known && logged.fetch_add(1) < 3)
             logging::log(logging::Level::info, logging::Channel::progression,
@@ -154,6 +159,7 @@ std::string_view throwdown_event(std::uint32_t hash) {
 // offline. The hosted server has exactly one real player and its broadcast
 // route reaches that same local connection, so throwdown events meant for the
 // host are re-routed there.
+std::atomic<ULONGLONG> quiet_leaves_until{};
 void send_event_hook(Address signature, Address output, const Address* arguments) {
     bool loopback{};
     {
@@ -189,6 +195,27 @@ void send_event_hook(Address signature, Address output, const Address* arguments
                     logging::log(logging::Level::info, logging::Channel::progression, "Throwdown: local player joined one.");
                 if (current_realm == client_realm && hash == 0xaa3f9957) state().throwdown_joined.store(false);
                 loopback = !name.empty() && empty_target && current_realm == server_realm && sole_offline_player_id();
+                // A player leaves a throwdown once: the confirmations that follow the local player's
+                // within a moment answer the virtual participants leaving with it (AI riders,
+                // relayed players), who have nobody behind them here. Each would tell the local
+                // player it left again.
+                if (loopback && hash == 0x2226d34c) {
+                    static std::atomic<ULONGLONG> confirmed{};
+                    const auto now = GetTickCount64();
+                    if (now < quiet_leaves_until.load(std::memory_order_acquire)) {
+                        logging::log(logging::Level::info, logging::Channel::progression,
+                            "Throwdown event {}: kept from the local player (a Death Race's end).", name);
+                        return;
+                    }
+                    if (now - confirmed.load(std::memory_order_relaxed) < 3000) {
+                        static std::atomic<unsigned> dropped_leaves{};
+                        if (dropped_leaves.fetch_add(1) < 32)
+                            logging::log(logging::Level::info, logging::Channel::progression,
+                                "Throwdown event {}: another participant's (a virtual one) dropped.", name);
+                        return;
+                    }
+                    confirmed.store(now, std::memory_order_relaxed);
+                }
                 static std::atomic<unsigned> logged{};
                 if (loopback && logged.fetch_add(1) < 16)
                     logging::log(logging::Level::info, logging::Channel::progression,
@@ -290,6 +317,8 @@ std::uint64_t player_info_hook(std::uint32_t player_id) {
     profile_runtime::PreserveError preserve;
     try {
         if (realm() != client_realm) return 0;
+        // A Death Race's AI rider: its own record (its name).
+        if (const auto rider = death_race::rider_info(player_id)) return rider;
         // Throwdown lab ids (no native player) borrow the local record, as the
         // members' own records will once throwdowns are relayed.
         if (throwdown_lab_player(player_id)) {
@@ -465,6 +494,7 @@ std::uint64_t service_player_info_hook(Address service, std::uint32_t player_id)
     profile_runtime::PreserveError preserve;
     try {
         if (service != read<Address>(state().base + engine::ui_manager)) return 0;
+        if (const auto rider = death_race::rider_info(player_id)) return rider;
         if (!throwdown_lab_player(player_id) && sole_offline_player_id() != player_id) return 0;
         return profile_runtime::local_player_info_hook();
     } catch (...) { return 0; }
@@ -564,6 +594,57 @@ void apply_throwdown_strings(Address base) noexcept {
             logging::log(logging::Level::info, logging::Channel::progression,
                 "Throwdowns: added {} S.K.A.T.E. strings the game does not ship (its title now reads S.K.A.T.E.).", added);
         }
+    } catch (...) {}
+}
+void quiet_leave_confirmations(unsigned milliseconds) noexcept {
+    quiet_leaves_until.store(GetTickCount64() + milliseconds, std::memory_order_release);
+}
+
+void dress_death_race_strings(Address base, bool death_race) noexcept {
+    namespace loc = addr::localization;
+    struct Dress { const char* id; const char* text; };
+    static constexpr std::array dresses{
+        Dress{"ID_JAM_SESSION", "Death Race"},
+        Dress{"ID_THROWDOWN_DESC_JAM",
+              "First to the [font effect=AttentionOutline color=Attention]finish line[/font] wins. "
+              "Knock your rivals off their boards!"},
+        // The race's objective on the HUD (a Jam's: do tricks to earn points), and its results'
+        // column: the points a place gives (death_race.cpp).
+        Dress{"ID_ACTIVITY_TD_DESC", "Be the first across the [font effect=AttentionOutline color=Attention]finish line[/font]!"},
+        Dress{"ID_LEADERBOARD_BEST", "Points"}};
+    // The game's own text, read before ours goes in (an id it could not read keeps its own).
+    static std::vector<std::pair<const char*, std::string>> originals;
+    static bool dressed{}, refused{};
+    if (death_race == dressed || refused || !base) return;
+    try {
+        const auto matches = [&](Address rva, const auto& prefix) {
+            std::array<unsigned char, 19> code{};
+            return memory::peek_bytes(base + rva, code.data(), code.size()) && std::memcmp(code.data(), prefix.data(), code.size()) == 0;
+        };
+        const auto translate = profile_runtime::buildkit_text_functions().translate;
+        if (!translate || !matches(loc::override_store, loc::override_store_prefix) || !matches(loc::override_set, loc::override_set_prefix)) {
+            refused = true;
+            logging::write(logging::Level::warning, logging::Channel::progression, "Death Race: the game's text store differs; the race keeps the Jam's name.");
+            return;
+        }
+        const auto store = reinterpret_cast<Address (*)()>(base + loc::override_store)();
+        if (!store) return;
+        const auto set = reinterpret_cast<bool (*)(Address, const char*, const char*, int)>(base + loc::override_set);
+        if (death_race) {
+            originals.clear();
+            for (const auto& dress : dresses) {
+                std::array<char, 1024> text{};
+                if (!(translate(dress.id, text.data(), static_cast<std::uint32_t>(text.size())) & 0xff) || !text[0]) continue;
+                originals.emplace_back(dress.id, std::string(text.data()));
+                set(store, dress.id, dress.text, 0);
+            }
+        } else {
+            for (const auto& [id, text] : originals) set(store, id, text.c_str(), 0);
+            originals.clear();
+        }
+        dressed = death_race;
+        logging::log(logging::Level::info, logging::Channel::progression, "Death Race: the Skate Jam's text {}.",
+                     death_race ? "reads as the race's" : "is the Jam's again");
     } catch (...) {}
 }
 void initialize_native_throwdowns(Address base) noexcept {

@@ -1,6 +1,8 @@
 #pragma once
 #include "Engine/Game/Settings/named_settings.h"
 #include <cstdint>
+#include <optional>
+#include <string>
 #include <string_view>
 namespace dingosdk {
 // Initialize before installing the client update hook. All other functions
@@ -18,6 +20,9 @@ std::string change_named_setting(std::string_view name, std::string_view value, 
 // any such change made before a session is put back when it starts.
 std::string player_change_named_setting(std::string_view name, std::string_view value, bool restore);
 std::string restore_named_settings();
+// One setting's value read from the engine now (its row is refreshed too), as the rows show it;
+// nothing when it is unknown or cannot be read. Game update thread.
+std::optional<std::string> observe_named_setting(std::string_view name);
 // Every engine setting name known so far: listed from the engine's settings
 // registry this session or remembered from earlier ones. Any thread.
 std::vector<std::string> named_setting_names();

@@ -25,7 +25,9 @@
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/DeathRace/death_race.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/HallOfMeat/hall_of_meat.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
 #include <dxgi.h>
@@ -273,6 +275,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool();
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
+    dingosdk::multiplayer::dress_death_race_strings(r.base, dingosdk::death_race::dressed());
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
         std::lock_guard lock(r.mutex);
@@ -1026,6 +1029,15 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             DINGO_PROFILE_ZONE("tick/trainer");
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/hall of meat");
+            dingosdk::hall_of_meat::tick(r.base, client, multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/death race");
+            // After the trainer, whose telemetry it reads; the same map the trainer means.
+            dingosdk::death_race::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");

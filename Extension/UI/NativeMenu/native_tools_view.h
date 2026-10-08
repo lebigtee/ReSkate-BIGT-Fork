@@ -8,14 +8,25 @@
 
 namespace dingosdk::native_tools {
 inline constexpr std::string_view root_asset = "Levels/Game/DingoLevel_Root/DingoLevel_Root";
-inline constexpr std::array<const char*, 5> sections{"World", "Custom Maps", "Parks", "Player", "Visuals"};
-enum Section : unsigned { world_section, custom_section, parks_section, player_section, visuals_section };
+inline constexpr std::array<const char*, 6> sections{"World", "Custom Maps", "Parks", "Player", "Visuals", "Death Race"};
+enum Section : unsigned { world_section, custom_section, parks_section, player_section, visuals_section, death_race_section };
 // The ReSkate splash level only hosts the startup screen; it is never a destination.
 inline constexpr std::string_view splash_asset = "DingoLevel_Splash";
 struct State {
     std::string destination, feedback;
     unsigned lot{};
     ParkChoices parks, seen_parks;
+    // The Hall of Meat's settings (Extension/HallOfMeat), copied in before each render and
+    // activation; its rows stay locked until they are.
+    struct HallOfMeat { bool available{}, on{}, slowmo{}, stutter{}; } hall_of_meat;
+    // The Death Race's (Extension/DeathRace), copied in the same way.
+    struct DeathRace {
+        struct Entry { std::string name; double best{}; std::size_t checkpoints{}; };
+        bool available{}, ready{}, building{}, racing{};
+        std::vector<Entry> races;
+        int selected = -1;
+        std::size_t draft_points{};
+    } death_race;
 };
 struct Row {
     std::string id, title, command, argument;
@@ -120,6 +131,11 @@ inline std::vector<std::string> time_of_day_commands(const overlay::Model& m, un
     }
     return commands;
 }
+inline std::string race_time(double seconds) {
+    const int whole = static_cast<int>(seconds);
+    return std::to_string(whole / 60) + ":" + (whole % 60 < 10 ? "0" : "") + std::to_string(whole % 60) + "." +
+           (static_cast<int>((seconds - whole) * 100) < 10 ? "0" : "") + std::to_string(static_cast<int>((seconds - whole) * 100));
+}
 inline void cycle(std::string& current, const std::vector<std::string>& choices) {
     if (choices.empty()) return;
     const auto at = std::find(choices.begin(), choices.end(), current);
@@ -189,6 +205,29 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
+    } else if (command == "hall-of-meat" || command == "hall-of-meat-slowmo" || command == "hall-of-meat-stutter") {
+        const auto& h = s.hall_of_meat;
+        if (command == "hall-of-meat") console(h.on ? "meat off" : "meat on", h.available);
+        else if (command == "hall-of-meat-slowmo") console(std::string("meat slowmo ") + (h.slowmo ? "0" : "1"), h.available && h.on);
+        else console(std::string("meat stutter ") + (h.stutter ? "0" : "1"), h.available && h.on);
+    } else if (command.starts_with("race-")) {
+        const auto& d = s.death_race;
+        const bool usable = d.available && d.ready;
+        if (command == "race-select") console("race select " + argument, d.available);
+        else if (command == "race-go") console("race go", usable && d.selected >= 0);
+        else if (command == "race-delete") console("race delete", d.available && d.selected >= 0);
+        else if (command == "race-hide") console("race hide", d.available && d.selected >= 0 && !d.racing);
+        else if (command == "race-new") console("race new", usable);
+        else if (command == "race-checkpoint") console("race checkpoint", usable && d.building);
+        else if (command == "race-finish") console("race finish-here", usable && d.building);
+        else if (command == "race-cancel") console("race cancel", d.available && d.building);
+        else if (command == "race-abort") console("race abort", d.available && d.racing);
+        // Research for the Death Race tile in the game's own Throwdowns menu: the whole UI model
+        // tree, written 12 s later (time to close this menu and open that one from the wheel).
+        else if (command == "race-capture") {
+            console("ui dump all 12", true);
+            if (s.feedback.empty()) s.feedback = "Now close this menu and open Affrontements from the wheel: the capture is in 12 s.";
+        }
     } else if (command == "board-wear-reset") {
         console("boardwear reset", m.offline.board_wear.available && m.offline.board_wear.effective);
     } else if (command == "challenges") {
@@ -283,6 +322,12 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",
             m.offline.board_wear.available && m.offline.board_wear.effective && cb.queue_console_command);
+        // skate 3's bail mini-game: the bones you break. Slow motion and stutter only mean anything with it on.
+        const auto& meat = s.hall_of_meat;
+        text(p.main, "hall-of-meat-title", "HALL OF MEAT");
+        toggle(p.main, "hall-of-meat", "Hall of Meat", meat.on, meat.available && cb.queue_console_command);
+        toggle(p.main, "hall-of-meat-slowmo", "Bail slow motion", meat.slowmo, meat.available && meat.on && cb.queue_console_command);
+        toggle(p.main, "hall-of-meat-stutter", "Bail stutter", meat.stutter, meat.available && meat.on && cb.queue_console_command);
         text(p.side, "flight-title", "FREE FLIGHT");
         const auto speed = std::to_string(m.debug.camera_speed);
         button(p.side, "speed", "Flight speed: " + speed.substr(0, speed.find('.') + 2), "speed",
@@ -295,6 +340,40 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         button(p.side, "card-name-save", "Save card name", "card-name", m.player_card.available, {}, true);
         button(p.side, "card-name-reset", "Use Steam name", "card-name-reset",
             m.player_card.available && !m.player_card.custom_name.empty());
+    } else if (section == death_race_section) {
+        // Death Races (Extension/DeathRace): this map's races on the left, what to do on the right.
+        const auto& d = s.death_race;
+        const bool usable = d.available && d.ready && cb.queue_console_command;
+        text(p.main, "races-title", "RACES ON THIS MAP");
+        for (std::size_t i = 0; i < d.races.size(); ++i) {
+            const auto& r = d.races[i];
+            std::string title = r.name + "  /  " + (r.best > 0 ? "best " + race_time(r.best) : std::string("no time yet"));
+            if (static_cast<int>(i) == d.selected) title += "  /  SELECTED";
+            button(p.main, "race-" + std::to_string(i), title, "race-select", d.available && cb.queue_console_command, std::to_string(i + 1));
+        }
+        if (d.races.empty()) text(p.main, "races-empty", "No race here yet: make one with NEW RACE.");
+        text(p.main, "races-help", "Select a race to set up its start line, flags and finish arch, go to its start, then open it from Throwdowns > DEATH RACE: rivals join at its flag.");
+        if (d.racing) {
+            text(p.side, "race-now-title", "RACING");
+            button(p.side, "race-abort", "Abort the race", "race-abort", d.available && cb.queue_console_command, {}, true);
+        }
+        text(p.side, "race-selected-title", "SELECTED RACE");
+        const bool chosen = d.selected >= 0 && d.selected < static_cast<int>(d.races.size());
+        button(p.side, "race-go", chosen ? "Go to its start" : "Go to its start (select one)", "race-go", usable && chosen && !d.building, {}, !d.building);
+        button(p.side, "race-hide", "Put its props away", "race-hide", d.available && chosen && !d.racing && cb.queue_console_command);
+        button(p.side, "race-delete", "Delete it", "race-delete", d.available && chosen && cb.queue_console_command);
+        text(p.side, "race-new-title", "NEW RACE");
+        if (!d.building) {
+            button(p.side, "race-new", "Set the start here", "race-new", usable && !d.racing);
+        } else {
+            text(p.side, "race-draft", d.draft_points <= 1 ? "Start set. Ride on: add checkpoints, then set the finish."
+                                                           : std::to_string(d.draft_points - 1) + " checkpoint(s) set. Ride on to the finish.");
+            button(p.side, "race-checkpoint", "Add a checkpoint here", "race-checkpoint", usable);
+            button(p.side, "race-finish", "Set the finish here", "race-finish", usable, {}, true);
+            button(p.side, "race-cancel", "Cancel the new race", "race-cancel", d.available && cb.queue_console_command);
+        }
+        text(p.side, "race-research-title", "RESEARCH");
+        button(p.side, "race-capture", "Capture the Affrontements menu", "race-capture", cb.queue_console_command != nullptr);
     } else {
         text(p.main, "visuals-title", "CAMERA EFFECTS");
         constexpr std::array<const char*, 3> names{"Film grain", "Vignette", "Chromatic aberration"};

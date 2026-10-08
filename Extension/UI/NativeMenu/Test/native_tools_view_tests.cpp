@@ -174,6 +174,73 @@ int main() {
             activate(split, maps, cb, "select-level", maps.levels[2].asset);
             check(split.destination.empty(), "Splash cannot be selected");
         }
+        {
+            // The Hall of Meat: locked until its settings are copied in, then each row flips one.
+            State meat;
+            overlay::Model none;
+            const auto row = [](const Page& page, std::string_view id) -> const Row* {
+                for (const auto& r : page.main) if (r.id == id) return &r;
+                return nullptr;
+            };
+            auto page = render(meat, none, cb, player_section);
+            check(row(page, "hall-of-meat") && row(page, "hall-of-meat")->command.empty(), "Hall of Meat waits for its settings");
+            meat.hall_of_meat = {true, true, true, false};
+            page = render(meat, none, cb, player_section);
+            check(row(page, "hall-of-meat")->title == "Hall of Meat: On" && row(page, "hall-of-meat")->command == "hall-of-meat",
+                "Hall of Meat shows it is on");
+            check(row(page, "hall-of-meat-slowmo")->title == "Bail slow motion: On" && row(page, "hall-of-meat-stutter")->title == "Bail stutter: Off",
+                "Slow motion and stutter show their own settings");
+            activate(meat, none, cb, "hall-of-meat", "");
+            check(capture.command == "meat off", "Hall of Meat turns off");
+            activate(meat, none, cb, "hall-of-meat-slowmo", "");
+            check(capture.command == "meat slowmo 0", "Slow motion turns off");
+            activate(meat, none, cb, "hall-of-meat-stutter", "");
+            check(capture.command == "meat stutter 1", "Stutter turns on");
+            meat.hall_of_meat.on = false;
+            page = render(meat, none, cb, player_section);
+            check(row(page, "hall-of-meat")->command == "hall-of-meat" && row(page, "hall-of-meat-slowmo")->command.empty() &&
+                  row(page, "hall-of-meat-stutter")->command.empty(), "With it off, only Hall of Meat itself can be pressed");
+            activate(meat, none, cb, "hall-of-meat", "");
+            check(capture.command == "meat on", "Hall of Meat turns on");
+        }
+        {
+            // Death Races: this map's races to pick, and a new one set flag by flag.
+            State races;
+            overlay::Model none;
+            const auto row_of = [](const std::vector<Row>& rows, std::string_view id) -> const Row* {
+                for (const auto& r : rows) if (r.id == id) return &r;
+                return nullptr;
+            };
+            races.death_race.available = races.death_race.ready = true;
+            races.death_race.races = {{"Race 1", 83.4, 2}, {"Race 2", 0.0, 0}};
+            races.death_race.selected = 0;
+            auto page = render(races, none, cb, death_race_section);
+            check(row_of(page.main, "race-0") && row_of(page.main, "race-0")->title == "Race 1  /  best 1:23.40  /  SELECTED",
+                "A race shows its best time and that it is selected");
+            check(row_of(page.main, "race-1")->title == "Race 2  /  no time yet" && row_of(page.main, "race-1")->argument == "2", "Races are numbered from 1");
+            activate(races, none, cb, "race-select", "2");
+            check(capture.command == "race select 2", "Selecting a race selects it");
+            activate(races, none, cb, "race-go", "");
+            check(capture.command == "race go", "Going to a race teleports to its start");
+            check(row_of(page.side, "race-new") && !row_of(page.side, "race-finish"), "A new race starts with its start flag");
+            activate(races, none, cb, "race-new", "");
+            check(capture.command == "race new", "The start flag is set");
+            races.death_race.building = true;
+            races.death_race.draft_points = 1;
+            page = render(races, none, cb, death_race_section);
+            check(row_of(page.side, "race-checkpoint") && row_of(page.side, "race-finish") && !row_of(page.side, "race-new"),
+                "While building: checkpoints and the finish");
+            check(row_of(page.side, "race-go")->command.empty(), "No teleport while a new race is being set");
+            activate(races, none, cb, "race-finish", "");
+            check(capture.command == "race finish-here", "The finish saves the race");
+            races.death_race.racing = true;
+            page = render(races, none, cb, death_race_section);
+            check(row_of(page.side, "race-abort") && row_of(page.side, "race-abort")->command == "race-abort", "A race in progress can be aborted");
+            races.death_race.ready = false;
+            races.death_race.racing = false;
+            page = render(races, none, cb, death_race_section);
+            check(row_of(page.side, "race-checkpoint")->command.empty(), "Without a skater nothing can be set");
+        }
         std::puts("Native ReSkate control checks passed.");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }

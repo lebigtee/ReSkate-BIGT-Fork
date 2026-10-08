@@ -8,6 +8,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Settings/named_settings.h"
+#include "Extension/DeathRace/death_race.h"
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -39,6 +40,12 @@ constexpr std::size_t virtual_slots = 0x3fe - virtual_base;
 constexpr std::string_view jam_mode = "JamSession", spot_battle_mode = "SpotBattle", skate_mode = "ThrowdownSkate";
 bool relayed_mode(std::string_view series) { return series == jam_mode || series == spot_battle_mode || series == skate_mode; }
 bool turn_based(std::string_view series) { return series == spot_battle_mode || series == skate_mode; }
+// A Death Race's drop (Extension/DeathRace) is offered under a series of its own, which ReSkate
+// builds without Death Races never link: they ignore it, and every message about it, without a
+// word (their drops and throwdowns stay as they are). The race's flags follow in a second offer of
+// their own series, its placement the race. Here such a drop is a Skate Jam that runs the race;
+// in it, a racer's score is its finish (milliseconds after its go).
+constexpr std::string_view race_series = "DeathRace", race_flags_series = "DeathRaceFlags";
 // A remote attempt waits for that player's turn to start here; one still waiting after this
 // long belongs to a turn this machine never gives them.
 constexpr std::uint64_t attempt_wait_ms = 20000;
@@ -100,6 +107,7 @@ struct Hosted {
     std::vector<std::uint64_t> members, added; // remote joiners in join order; those in the queue here
     bool relayed{}, started{}, start_sent{};
     std::uint64_t next_offer{};
+    std::vector<std::uint8_t> race; // the Death Race it runs (death_race::hosted_race), sent with it
 };
 // Another player's drop, spawned on the local server hosted by the leader's virtual id.
 struct Mirror {
@@ -110,6 +118,7 @@ struct Mirror {
     std::uint64_t token{}, gone_at{}, spawning_since{};
     std::uint32_t mmid{}, max_players{};
     bool joined{}; // the local player is in it
+    std::vector<std::uint8_t> race; // the Death Race it runs (its leader's race message)
     std::optional<std::vector<std::uint64_t>> start; // the leader started before the copy existed
 };
 const char *state_name(Mirror::State s) {
@@ -208,6 +217,12 @@ struct Relay {
     std::map<std::uint64_t, std::uint64_t> declined;
     bool party_settings{};
     std::uint64_t next_party_settings{};
+    // The running throwdown is a Death Race: the other racers' finishes (milliseconds after their
+    // go). The local player's own finish and the race's end, from the race (under `mutex`).
+    bool running_race{};
+    std::map<std::uint64_t, std::int32_t> race_finishes;
+    std::optional<std::int32_t> own_finish;
+    bool end_race{};
 };
 Relay &relay() {
     static auto *value = new Relay;
@@ -267,8 +282,10 @@ ThrowdownMessage message(Kind kind, std::uint64_t leader, std::uint32_t id) {
 // The local player's own drop.
 void send_offer(Relay &r, std::uint64_t now) {
     auto &h = *r.hosted;
+    h.race = death_race::hosted_race(h.id);
     auto m = message(Kind::offer, r.local, h.id);
-    m.series = h.series; m.placement = h.placement; m.settings = h.settings; m.order = h.members;
+    m.series = h.race.empty() ? h.series : std::string(race_series);
+    m.placement = h.placement; m.settings = h.settings; m.order = h.members;
     const auto before = r.outgoing.size();
     send(r, m);
     if (r.outgoing.size() == before) {
@@ -276,6 +293,12 @@ void send_offer(Relay &r, std::uint64_t now) {
         return;
     }
     h.next_offer = now + offer_interval_ms;
+    if (!h.race.empty()) {
+        auto flags = message(Kind::offer, r.local, h.id);
+        flags.series = race_flags_series;
+        flags.placement = h.race;
+        send(r, flags);
+    }
 }
 // The drop is gone without having started (cancelled, left, replaced, world change).
 void close_hosted(Relay &r) {
@@ -382,6 +405,8 @@ void end_running(Relay &r) {
     r.quit.clear();
     r.departed.clear();
     r.own = {};
+    r.running_race = false;
+    r.race_finishes.clear();
     if (r.hosted && r.hosted->started) r.hosted.reset();
     std::erase_if(r.mirrors, [](const auto &entry) { return entry.second.state == Mirror::State::started; });
 }
@@ -396,7 +421,8 @@ std::string_view mode_name(std::string_view series) {
 // takes part (ServerMpActivityBase.OnForceDestroyCurrentEvent checks just that). False while
 // that cannot be sent yet; the tick tries again.
 bool alone(const Relay &r) {
-    if (!r.running || r.players.size() < 2) return false;
+    // A race goes on: the local player may still finish it (the race ends it then).
+    if (!r.running || r.players.size() < 2 || r.running_race) return false;
     return std::all_of(r.players.begin(), r.players.end(), [&](std::uint64_t p) {
         return p == r.local || r.quit.contains(p) || (!r.peers.contains(p) && !r.departed.contains(p));
     });
@@ -413,6 +439,11 @@ bool end_alone(Relay &r) {
 void set_running(Relay &r, const Key &key, const std::string &series) {
     r.running = key;
     r.running_series = series;
+    // A Death Race: its drop came with one (the local player's own, or its leader's message).
+    const auto mirror = r.mirrors.find(key);
+    r.running_race = key.leader == r.local ? r.hosted && r.hosted->id == key.id && !r.hosted->race.empty()
+                                           : mirror != r.mirrors.end() && !mirror->second.race.empty();
+    r.race_finishes.clear();
     r.scores.clear();
     r.remote.clear();
     r.turns.clear();
@@ -424,7 +455,9 @@ void set_running(Relay &r, const Key &key, const std::string &series) {
     r.departed.clear();
     r.own = {};
     if (const auto it = r.early.find(key); it != r.early.end())
-        for (const auto &[player, value] : it->second) r.scores[player] = {value, true};
+        for (const auto &[player, value] : it->second)
+            if (!r.running_race) r.scores[player] = {value, true};
+            else if (value > 0) r.race_finishes[player] = value;
     if (const auto it = r.early_remote.find(key); it != r.early_remote.end())
         r.remote.assign(it->second.begin(), it->second.end());
     r.early.clear();
@@ -505,7 +538,7 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
         bool foreign{};
         for (const auto id : a.participants) {
             if (const auto player = player_of(r, id)) players.push_back(*player);
-            else foreign = true;
+            else if (!death_race::is_rider(id)) foreign = true;
         }
         for (auto &[key, m] : r.mirrors) {
             if (!m.joined || (m.state != Mirror::State::open && m.state != Mirror::State::started)) continue;
@@ -544,7 +577,8 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
         end_running(r);
         break;
     case Local::score:
-        if (r.running && r.running_series == jam_mode) { r.own.value = a.score; r.own.dirty = true; }
+        // A race's scores are its places, which every machine writes from the finishes.
+        if (r.running && r.running_series == jam_mode && !r.running_race) { r.own.value = a.score; r.own.dirty = true; }
         break;
     case Local::row:
         // Every write in order (the round board adds): no throttling.
@@ -631,7 +665,16 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
     const auto mirror = r.mirrors.find(key);
     switch (m.kind) {
     case Kind::offer: {
-        if (m.leader != sender || !relayed_mode(m.series)) return;
+        if (m.series == race_flags_series) {
+            // The race a Death Race's drop runs: its copy here runs it too.
+            if (m.leader == sender && mirror != r.mirrors.end() && mirror->second.race != m.placement) {
+                mirror->second.race = m.placement;
+                note("player {:#x}'s drop (their MMID {:#x}) is a Death Race.", m.leader, m.id);
+            }
+            return;
+        }
+        const std::string series = m.series == race_series ? std::string(jam_mode) : m.series;
+        if (m.leader != sender || !relayed_mode(series)) return;
         if (mirror != r.mirrors.end()) {
             // A copy removed here (full, or left) stays removed while the leader keeps offering it.
             if (mirror->second.state == Mirror::State::gone) mirror->second.gone_at = now;
@@ -644,7 +687,7 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
         for (auto &[other, copy] : r.mirrors)
             if (other.leader == m.leader) destroy_mirror(r, copy, now);
         Mirror copy;
-        copy.series = m.series; copy.placement = m.placement; copy.settings = m.settings;
+        copy.series = series; copy.placement = m.placement; copy.settings = m.settings;
         for (const auto player : m.order)
             if (player != r.local && player != m.leader && !contains(copy.members, player)) copy.members.push_back(player);
         r.mirrors.emplace(key, std::move(copy));
@@ -714,7 +757,10 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
     }
     case Kind::score:
         if (r.running && *r.running == key) {
-            if (contains(r.players, sender)) r.scores[sender] = {m.value, true};
+            if (!contains(r.players, sender)) return;
+            if (!r.running_race) r.scores[sender] = {m.value, true};
+            else if (m.value > 0 && r.race_finishes.emplace(sender, m.value).second)
+                note("player {:#x} crossed the line after {} ms.", sender, m.value);
         } else if ((m.leader == r.local && r.hosted && r.hosted->id == m.id) || mirror != r.mirrors.end()) {
             r.early[key][sender] = m.value;
         }
@@ -1203,6 +1249,40 @@ void apply_queue_timer(Relay &r, bool linked, std::uint64_t now) {
     }
 }
 
+// The running race's requests: the local finish goes to the other racers; everyone in, its copy
+// here ends as a Death Race ends alone: the local player leaves it, and it ends as another racer
+// (each machine ends its own once it knows everyone is in).
+void pump_race(Relay &r) {
+    std::optional<std::int32_t> finish;
+    bool end{};
+    {
+        std::lock_guard lock(r.mutex);
+        finish = std::exchange(r.own_finish, std::nullopt);
+        end = std::exchange(r.end_race, false);
+    }
+    if (!r.running || !r.running_race) return;
+    if (finish) {
+        auto m = message(Kind::score, r.running->leader, r.running->id);
+        m.value = std::max(1, *finish);
+        send(r, m);
+        note("own finish ({} ms) sent to the other racers.", m.value);
+    }
+    if (!end) return;
+    const auto me = local_native_player_id();
+    std::uint32_t other{};
+    for (const auto player : r.players)
+        if (player != r.local)
+            if (const auto id = virtual_id(r, player)) { other = id; break; }
+    bool left{}, ended{};
+    if (other) {
+        left = me && queue_challenge_leave(me);
+        ended = queue_throwdown_destroy_event(other);
+    } else {
+        ended = me && queue_throwdown_destroy_event(me);
+    }
+    note("everyone crossed the line: the race ends here ({}{}).", left ? "left, " : "", ended ? "ended" : "could not be ended");
+    end_running(r);
+}
 void maintain(Relay &r, std::uint64_t now) {
     if (!r.in_world) return;
     // The event types belong to the level: each one's are found by a background heap scan,
@@ -1247,7 +1327,8 @@ void maintain(Relay &r, std::uint64_t now) {
         add_to_hosted(r);
         if (r.running) {
             for (auto &[player, score] : r.scores)
-                if (score.dirty)
+                if (score.dirty && r.running_race) score.dirty = false;
+                else if (score.dirty)
                     if (const auto id = virtual_id(r, player); id && queue_throwdown_score(id, score.value)) {
                         score.dirty = false;
                         static std::atomic<unsigned> logged{};
@@ -1292,7 +1373,15 @@ void maintain(Relay &r, std::uint64_t now) {
             }
         }
     }
-    if (r.hosted && r.hosted->relayed && !r.hosted->started && now >= r.hosted->next_offer) send_offer(r, now);
+    if (r.hosted && r.hosted->relayed && !r.hosted->started) {
+        // A Death Race knows its drop a moment after the drop is described: it goes out then.
+        if (auto race = death_race::hosted_race(r.hosted->id); race != r.hosted->race) {
+            r.hosted->race = std::move(race);
+            if (!r.hosted->race.empty()) r.hosted->next_offer = now;
+            note("your drop (MMID {:#x}) {} a Death Race.", r.hosted->id, r.hosted->race.empty() ? "is no longer" : "is");
+        }
+        if (now >= r.hosted->next_offer) send_offer(r, now);
+    }
     std::erase_if(r.mirrors, [&](const auto &entry) {
         return entry.second.state == Mirror::State::gone && now - entry.second.gone_at > gone_forget_ms;
     });
@@ -1403,6 +1492,7 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
             if (const auto m = decode_throwdown(bytes)) on_message(r, sender, *m, now);
             else logging::write(logging::Level::warning, logging::Channel::progression, "Throwdowns: unreadable message from another player dropped.");
         }
+        pump_race(r);
         maintain(r, now);
         if (alone(r)) end_alone(r);
         pump_challenge(r, now);
@@ -1429,6 +1519,56 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
     return std::exchange(r.outgoing, {});
 }
 
+std::vector<RaceOffer> throwdown_relay_race_offers() {
+    std::vector<RaceOffer> out;
+    const auto &r = relay();
+    if (!r.local) return out;
+    for (const auto &[key, m] : r.mirrors) {
+        if (m.race.empty() || m.state == Mirror::State::gone || m.state == Mirror::State::started) continue;
+        out.push_back({key.leader, key.id, player_name(r, key.leader), m.race, m.joined});
+    }
+    return out;
+}
+std::optional<RunningRace> throwdown_relay_running_race() {
+    const auto &r = relay();
+    if (!r.local || !r.running || !r.running_race) return std::nullopt;
+    RunningRace race{r.running->leader, r.running->id, {}};
+    auto players = r.players;
+    if (!contains(players, r.local)) players.push_back(r.local);
+    std::sort(players.begin(), players.end(), [&](std::uint64_t a, std::uint64_t b) {
+        if ((a == race.leader) != (b == race.leader)) return a == race.leader;
+        return a < b;
+    });
+    for (const auto player : players) {
+        RaceRacer racer;
+        racer.player = player;
+        racer.local = player == r.local;
+        racer.id = racer.local ? local_native_player_id() : virtual_id(r, player);
+        racer.name = racer.local ? std::string() : player_name(r, player);
+        racer.out = !racer.local && r.quit.contains(player);
+        if (const auto it = r.race_finishes.find(player); it != r.race_finishes.end()) racer.finish = it->second;
+        race.racers.push_back(std::move(racer));
+    }
+    return race;
+}
+void throwdown_relay_race_finished(std::int32_t ms) noexcept {
+    auto &r = relay();
+    std::lock_guard lock(r.mutex);
+    r.own_finish = ms;
+}
+void throwdown_relay_end_race() noexcept {
+    auto &r = relay();
+    std::lock_guard lock(r.mutex);
+    r.end_race = true;
+}
+std::size_t throwdown_relay_hosted_joiners() noexcept {
+    const auto &r = relay();
+    return r.local && r.hosted && r.hosted->relayed && !r.hosted->started ? r.hosted->members.size() : 0;
+}
+
+bool throwdown_relay_linked() noexcept { return relay().local != 0; }
+void throwdown_relay_queue_timer_changed() noexcept { relay().timer.clear(); }
+
 void receive_throwdown_relay(std::uint64_t sender, std::span<const std::uint8_t> message) {
     auto &r = relay();
     std::lock_guard lock(r.mutex);
@@ -1437,6 +1577,19 @@ void receive_throwdown_relay(std::uint64_t sender, std::span<const std::uint8_t>
 
 void throwdown_relay_local(ThrowdownLocalAction action) noexcept {
     try {
+        // The Death Race follows the throwdown that carries a race it opened.
+        using LocalKind = ThrowdownLocalAction::Kind;
+        using death_race::Throwdown;
+        switch (action.kind) {
+        case LocalKind::created: death_race::throwdown_event(Throwdown::created, action.series, action.mmid); break;
+        case LocalKind::exited:
+            death_race::throwdown_event(action.cancelling ? Throwdown::cancelled : Throwdown::configured, action.series, action.mmid);
+            break;
+        case LocalKind::force_started: death_race::throwdown_event(Throwdown::started, action.series, action.mmid); break;
+        case LocalKind::entered: death_race::throwdown_event(Throwdown::entered, action.series, action.mmid); break;
+        case LocalKind::ended: death_race::throwdown_event(Throwdown::ended, action.series, action.mmid); break;
+        default: break;
+        }
         auto &r = relay();
         std::lock_guard lock(r.mutex);
         if (r.actions.size() < 256) r.actions.push_back(std::move(action));

@@ -1,5 +1,6 @@
 #pragma once
 #include "Extension/Multiplayer/Net/protocol.h"
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -16,8 +17,11 @@ bool local_allows_player_collision(std::uintptr_t base, std::uintptr_t local_ent
 // Client thread, for the current PeerScope slot, each frame the player's pose is shown:
 // places the slot's capsules at `pose`, or switches them off when `solid` is false. `context`
 // is the local skater's game context; a new one (a level load) means a new physics world.
+// `feet`: where the skater's capsule stands, when not at the pose's root (the retail proxy's
+// place); `radius`: its radius, when not the retail proxy's (both kept as the slot's capsule was
+// first made with them).
 void update_remote_collision(std::uintptr_t base, std::uintptr_t context, const Pose &pose, bool solid,
-                             std::uint64_t now_us) noexcept;
+                             std::uint64_t now_us, const std::array<float, 3> *feet = nullptr, float radius = 0.0f) noexcept;
 // Client thread, for the current PeerScope slot: the player's skater is gone. Its capsules stop
 // colliding and wait, still allocated, for the slot's next player.
 void clear_remote_collision(std::uintptr_t base) noexcept;

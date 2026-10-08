@@ -3,12 +3,22 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
+#include "Extension/HallOfMeat/hall_of_meat_hud.h"
+#include "Extension/HallOfMeat/hall_of_meat_replay.h"
+#include "Extension/DeathRace/death_race_hud.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
 
 namespace dingosdk::overlay::detail {
+
+// The Hall of Meat's slow motion replay (multiplayer sessions), and when it was last used.
+PictureReplay& picture_replay() {
+    static auto* value = new PictureReplay;
+    return *value;
+}
+std::chrono::steady_clock::time_point picture_replay_used{};
 
 bool completed(UINT64 value, DWORD timeout_ms) {
     auto& s = state();
@@ -46,6 +56,9 @@ void destroy_graphics() {
     s.win32_ready = s.dx12_ready = s.ready = false;
     s.ui_was_interactive = false;
     s.frames.clear();
+    s.held_picture.Reset();
+    s.held_picture_id = 0;
+    picture_replay().release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -287,8 +300,13 @@ bool setup_graphics() {
     // normally long finished by the time the first frame gets here.
     // Emotes reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
+    const auto bone_sheet = reserve_hall_of_meat_bones(*ImGui::GetIO().Fonts);
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
+    fill_hall_of_meat_bones(*ImGui::GetIO().Fonts);
+    if (!bone_sheet)
+        dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+            "Hall of Meat: the bone sheet is missing from ReSkate.dll; the X-ray cannot be drawn.");
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -414,6 +432,111 @@ void draw_menu() {
     if (!visible) s.visible.store(false);
 }
 
+// The Hall of Meat's jerky bail (hall_of_meat_hud.cpp): keeps a copy of this frame's picture, or
+// puts the kept copy back in its place, before the overlay draws on it. Two copies of the screen
+// on the GPU at most; the game itself runs on at full speed. The buffer is left in PRESENT.
+void hold_picture(State& s, ID3D12Resource* buffer, const FrameHold& hold) {
+    DINGO_PROFILE_ZONE("overlay/hall of meat picture");
+    using Action = FrameHold::Action;
+    const auto now = std::chrono::steady_clock::now();
+    if (hold.action == Action::none) {
+        // Unused for a while: let the copy go, once the GPU is done with it.
+        if (s.held_picture && now - s.held_picture_used > std::chrono::seconds(3) && completed(s.next_fence, 0)) {
+            s.held_picture.Reset();
+            s.held_picture_id = 0;
+        }
+        return;
+    }
+    const auto desc = buffer->GetDesc();
+    if (s.held_picture) {
+        // A resize recreates the overlay's graphics, and this copy, first.
+        const auto held = s.held_picture->GetDesc();
+        if (held.Width != desc.Width || held.Height != desc.Height || held.Format != desc.Format) return;
+    } else {
+        if (hold.action != Action::keep) return;
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        auto picture = desc;
+        picture.Flags = D3D12_RESOURCE_FLAG_NONE;
+        const auto started = std::chrono::steady_clock::now();
+        const auto created = s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &picture, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                               nullptr, IID_PPV_ARGS(&s.held_picture));
+        const auto took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "Hall of Meat: picture copy %llux%u %s in %.2f ms.", static_cast<unsigned long long>(desc.Width), desc.Height,
+            SUCCEEDED(created) ? "created" : "unavailable", took);
+        if (FAILED(created)) { s.held_picture.Reset(); return; }
+    }
+    const bool keep = hold.action == Action::keep;
+    if (!keep && s.held_picture_id != hold.picture) return; // that one was never kept: the live picture stays
+    D3D12_RESOURCE_BARRIER barriers[2]{};
+    for (auto& barrier : barriers) {
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    }
+    barriers[0].Transition.pResource = buffer;
+    barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+    barriers[0].Transition.StateAfter = keep ? D3D12_RESOURCE_STATE_COPY_SOURCE : D3D12_RESOURCE_STATE_COPY_DEST;
+    // The copy rests in COPY_DEST, ready to keep the next picture.
+    barriers[1].Transition.pResource = s.held_picture.Get();
+    barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    const UINT count = keep ? 1 : 2;
+    s.commands->ResourceBarrier(count, barriers);
+    if (keep) s.commands->CopyResource(s.held_picture.Get(), buffer);
+    else s.commands->CopyResource(buffer, s.held_picture.Get());
+    for (auto& barrier : barriers) std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    s.commands->ResourceBarrier(count, barriers);
+    if (keep) s.held_picture_id = hold.picture;
+    s.held_picture_used = now;
+}
+
+// The Hall of Meat's slow motion replay (hall_of_meat_replay.h): keeps this frame's picture and
+// draws a kept one over it, as the HUD planned, before the overlay draws. Its pipeline is made
+// while a bail would be replayed (a multiplayer session), before one comes; the kept pictures
+// are let go 10 s after the last replay, and everything once no bail would be replayed.
+void replay_picture(State& s, Frame& frame, const FrameHold::Replay& plan) {
+    DINGO_PROFILE_ZONE("overlay/hall of meat replay");
+    auto& replay = picture_replay();
+    const auto now = std::chrono::steady_clock::now();
+    const bool busy = plan.keep_slot >= 0 || plan.show_slot >= 0;
+    if (busy) picture_replay_used = now;
+    if (!busy && replay.prepared() && now - picture_replay_used > std::chrono::seconds(10) && completed(s.next_fence, 0)) {
+        if (replay.bytes()) {
+            dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+                "Hall of Meat: replay let go of %.1f MB of pictures.", replay.bytes() / 1048576.0);
+            replay.release_pictures();
+        }
+        if (!plan.ready) replay.release();
+        picture_replay_used = now;
+    }
+    if (!busy && !plan.ready) return;
+    std::string error;
+    static bool warned = false;
+    if (!replay.prepared()) {
+        const auto started = std::chrono::steady_clock::now();
+        const bool ok = replay.prepare(s.device.Get(), frame.buffer->GetDesc(), error);
+        const auto took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        if (ok) dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "Hall of Meat: slow motion replay ready in %.2f ms.", took);
+        else if (!warned) {
+            warned = true;
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+                "Hall of Meat: no slow motion replay: %s.", error.c_str());
+        }
+        if (!ok) return;
+    }
+    if (plan.keep_slot >= 0 &&
+        !replay.keep(s.commands.Get(), frame.buffer.Get(), static_cast<std::size_t>(plan.keep_slot), plan.keep_id, error) && !warned) {
+        warned = true;
+        dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
+            "Hall of Meat: replay picture not kept: %s.", error.c_str());
+    }
+    if (plan.show_slot >= 0)
+        (void)replay.show(s.commands.Get(), frame.buffer.Get(), frame.rtv, static_cast<std::size_t>(plan.show_slot), plan.show_id,
+                          plan.opacity);
+}
+
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
@@ -453,7 +576,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
-    const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
+    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || hall_of_meat_hud_pending() || death_race_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -522,6 +645,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_skate_hud();
     draw_perf_hud();
     draw_trainer_hud();
+    draw_death_race_hud();
+    draw_hall_of_meat_hud();
     draw_notices();
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
@@ -542,6 +667,9 @@ void render(IDXGISwapChain* presented, UINT flags) {
     if (FAILED(frame.allocator->Reset()) || FAILED(s.commands->Reset(frame.allocator.Get(), nullptr))) {
         ImGui::SetCurrentContext(previous); s.failed = true; restore_input(true); return;
     }
+    const auto hold = hall_of_meat_frame_hold();
+    hold_picture(s, frame.buffer.Get(), hold);
+    replay_picture(s, frame, hold.replay);
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();
