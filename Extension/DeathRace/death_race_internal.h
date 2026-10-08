@@ -55,6 +55,9 @@ inline constexpr double respawn_after = 2.2, respawn_back = 1.0, respawn_kept = 
 inline constexpr int throwdown_timer = 300, points_a_place = 100;
 // The game shows its results as a throwdown ends: the race's text stays for them this long.
 inline constexpr double dressed_after = 30.0;
+// The AI riders join the race's queue as soon as the game lets them; past this long the player is
+// told they are on their way (and the log says why they are not in).
+inline constexpr double riders_slow_to_join = 5.0;
 // Everyone in, the race ends once the skater is up (if it fell), waiting no longer than this.
 inline constexpr double longest_end_wait = 6.0;
 // The AI riders' names, drawn anew for each race.
@@ -114,6 +117,8 @@ struct State {
         std::uint32_t mmid{};
         int riders{}, riders_in{}; // AI riders it takes, and those already in its queue
         bool riders_off{};         // they stepped aside for other players who joined
+        double joining_since{};    // when its AI riders began trying to join its queue
+        bool joining_told{};       // the player was told they are slow to
         bool done{};               // its race was run to the finish
     } carrier;
     bool carried{}; // the race in progress was started by its throwdown

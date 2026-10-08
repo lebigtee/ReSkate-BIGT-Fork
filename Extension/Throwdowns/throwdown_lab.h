@@ -38,6 +38,8 @@ std::string challenge_lab_command(std::string_view arguments);
 // Finds the event types once per process by a heap scan on a worker thread: false until it
 // has, true from then on. Poll it; it never blocks.
 bool prepare_throwdown_injection() noexcept;
+// Where that stands, for the log: "ready", or what it waits for.
+std::string throwdown_injection_state() noexcept;
 // DebugSpawnThrowdownWithParams hosted by `host`; the queue's MMID comes back through
 // throwdown_relay_spawned(token, ...).
 bool queue_throwdown_spawn(std::uint64_t token, std::uint32_t host, const std::string &series,

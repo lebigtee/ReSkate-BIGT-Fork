@@ -290,7 +290,17 @@ void drain(State &s, double now) {
             c.riders = riders_for(s);
         }
     }
-    // The race's flag is up: its AI riders join its queue, as players, so it can start.
+    // The race's flag is up: its AI riders join its queue, as players, so it can start. Until they
+    // can (the game's event types are found anew in each level), the player is told after a while.
+    if (c.configured && c.mmid && c.riders_in < c.riders) {
+        if (!c.joining_since) c.joining_since = now;
+        if (!c.joining_told && now - c.joining_since >= riders_slow_to_join) {
+            c.joining_told = true;
+            say(std::format("Death Race: the AI riders have not joined the race's queue after {:.0f} s ({}/{} in): {}.", now - c.joining_since,
+                            c.riders_in, c.riders, multiplayer::throwdown_injection_state()));
+            tell(s, "The AI riders are on their way to the start: a moment...");
+        }
+    }
     if (c.configured && c.mmid && c.riders_in < c.riders && multiplayer::prepare_throwdown_injection()) {
         const int before = c.riders_in;
         if (!before) {
@@ -302,7 +312,11 @@ void drain(State &s, double now) {
             for (auto &record : rider_records) record.store(0, std::memory_order_release);
         }
         while (c.riders_in < c.riders && multiplayer::add_throwdown_rider(rider_base + 1 + c.riders_in, "JamSession", c.mmid)) ++c.riders_in;
-        if (c.riders_in > before) say(std::format("Death Race: {} AI rider(s) joined the race's queue.", c.riders_in));
+        if (c.riders_in > before)
+            say(std::format("Death Race: {} AI rider(s) joined the race's queue{}.", c.riders_in,
+                            c.joining_told ? std::format(" after {:.0f} s", now - c.joining_since) : ""));
+        else if (!c.joining_told && now - c.joining_since >= riders_slow_to_join)
+            say("Death Race: the game turned the AI riders away from the race's queue.");
     }
 }
 

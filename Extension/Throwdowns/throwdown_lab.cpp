@@ -210,6 +210,10 @@ struct Lab {
     // before it was left found ones that are gone by the time it reports them.
     std::atomic<std::uint64_t> world{};
     std::atomic<bool> type_scan_running{};     // prepare_throwdown_injection's worker
+    std::atomic<std::uint64_t> type_scan_started{}; // when the running scan began (ms)
+    // A level is loading (from its transition until it is active): a heap scan then finds nothing
+    // and takes minutes (native_type_scan.h), so none starts.
+    std::atomic<bool> level_loading{};
     std::atomic<std::uint64_t> type_scan_retry{}; // after a scan that missed some: not before this
     std::atomic<std::uint64_t> beacon_scan_retry{}; // the same for the party beacon events
     std::deque<Job> jobs;
@@ -1982,6 +1986,8 @@ void pump_throwdown_lab(Address vm) noexcept {
 }
 
 void throwdown_lab_before_level_transition(unsigned next) noexcept {
+    // 13 and 21: a level or sublevel is active; any other state loads or leaves one.
+    lab().level_loading.store(next != 13 && next != 21, std::memory_order_release);
     // 14, 22 and 3 leave a level or sublevel, 24 shuts down: the level's bundles are unloaded,
     // and the events' types with them.
     if (next != 14 && next != 22 && next != 3 && next != 24) return;
@@ -2008,7 +2014,9 @@ constexpr std::array relay_events{event_debug_spawn, event_add_ai, event_force_s
 bool beacon_types_ready() {
     auto& l = lab();
     if (type_of(event_beacon_move) && type_of(event_beacon_despawn)) return true;
+    if (l.level_loading.load(std::memory_order_acquire)) return false;
     if (now_ms() < l.beacon_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
+    l.type_scan_started.store(now_ms(), std::memory_order_release);
     try {
         std::thread([] {
             auto& l = lab();
@@ -2040,9 +2048,11 @@ bool prepare_throwdown_injection() noexcept {
     auto& l = lab();
     if (!l.installed.load(std::memory_order_acquire)) return false;
     if (std::ranges::all_of(relay_events, [](std::uint32_t hash) { return type_of(hash) != 0; })) return true;
+    if (l.level_loading.load(std::memory_order_acquire)) return false;
     // The heap scan takes a few hundred milliseconds: on the game thread it stalled the frame a
     // drop appeared in. A worker runs it and the caller polls until the types are cached.
     if (now_ms() < l.type_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
+    l.type_scan_started.store(now_ms(), std::memory_order_release);
     try {
         std::thread([] {
             auto& l = lab();
@@ -2051,15 +2061,34 @@ bool prepare_throwdown_injection() noexcept {
                                                  event_remove_participant, event_player_score, event_request_turn_end,
                                                  event_skate_submit, event_force_destroy, event_criteria_attempt,
                                                  event_slam_hit, event_leave_in_progress, event_onboarding_complete});
+                const double took = static_cast<double>(now_ms() - l.type_scan_started.load(std::memory_order_acquire)) / 1000.0;
                 if (!error.empty()) {
                     l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release);
-                    logging::log(logging::Level::warning, logging::Channel::progression, "Throwdowns: {}", error);
+                    logging::log(logging::Level::warning, logging::Channel::progression, "Throwdowns: {} ({:.1f} s)", error, took);
+                } else {
+                    logging::log(logging::Level::info, logging::Channel::progression, "Throwdowns: the event types found in {:.1f} s.", took);
                 }
             } catch (...) { l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release); }
             l.type_scan_running.store(false, std::memory_order_release);
         }).detach();
     } catch (...) { l.type_scan_running.store(false, std::memory_order_release); }
     return false;
+}
+std::string throwdown_injection_state() noexcept {
+    try {
+        auto& l = lab();
+        if (!l.installed.load(std::memory_order_acquire)) return "the throwdown lab is not installed";
+        if (std::ranges::all_of(relay_events, [](std::uint32_t hash) { return type_of(hash) != 0; })) return "ready";
+        const auto now = now_ms();
+        if (l.level_loading.load(std::memory_order_acquire) && !l.type_scan_running.load(std::memory_order_acquire))
+            return "waiting for the level to finish loading";
+        if (l.type_scan_running.load(std::memory_order_acquire))
+            return std::format("looking for the game's event types ({:.0f} s so far)",
+                               static_cast<double>(now - l.type_scan_started.load(std::memory_order_acquire)) / 1000.0);
+        if (const auto retry = l.type_scan_retry.load(std::memory_order_acquire); now < retry)
+            return std::format("the game's event types were not found; looking again in {:.0f} s", static_cast<double>(retry - now) / 1000.0);
+        return "the game's event types are to be looked for";
+    } catch (...) { return "unknown"; }
 }
 bool queue_throwdown_spawn(std::uint64_t token, std::uint32_t host, const std::string& series,
                            const std::vector<std::uint8_t>& placement, const std::vector<std::uint8_t>& settings) noexcept {
