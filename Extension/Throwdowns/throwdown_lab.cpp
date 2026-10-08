@@ -1359,12 +1359,12 @@ void remember_player(std::uint32_t id) {
     }
 }
 // Type objects of the injected events; found on the heap and kept until the level is left.
-std::string ensure_types(std::initializer_list<std::uint32_t> hashes) {
+std::string ensure_types(std::initializer_list<std::uint32_t> hashes, bool background = false) {
     std::vector<NativeTypeQuery> queries;
     for (const auto hash : hashes) if (!type_of(hash)) queries.push_back({hash, 0});
     if (queries.empty()) return {};
     const auto world = lab().world.load(std::memory_order_acquire);
-    const auto missing = find_native_types(queries);
+    const auto missing = find_native_types(queries, background);
     std::lock_guard lock(lab().mutex);
     if (lab().world.load(std::memory_order_acquire) != world) return "the level changed while the event types were looked for";
     for (const auto& q : queries) if (q.object) lab().types[q.hash] = q.object;
@@ -2057,16 +2057,23 @@ bool prepare_throwdown_injection() noexcept {
         std::thread([] {
             auto& l = lab();
             try {
+                // The relay's own events first, alone: a scan stops once it has found everything it
+                // looks for, and one that misses a type reads the whole heap (minutes). The other
+                // modes' events, which a level may not have (a megapark has no slam or onboarding
+                // event), are looked for after, at background priority, holding nothing back.
                 const auto error = ensure_types({event_debug_spawn, event_add_ai, event_force_start, event_destroy,
                                                  event_remove_participant, event_player_score, event_request_turn_end,
-                                                 event_skate_submit, event_force_destroy, event_criteria_attempt,
-                                                 event_slam_hit, event_leave_in_progress, event_onboarding_complete});
+                                                 event_skate_submit, event_force_destroy});
                 const double took = static_cast<double>(now_ms() - l.type_scan_started.load(std::memory_order_acquire)) / 1000.0;
                 if (!error.empty()) {
                     l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release);
                     logging::log(logging::Level::warning, logging::Channel::progression, "Throwdowns: {} ({:.1f} s)", error, took);
                 } else {
                     logging::log(logging::Level::info, logging::Channel::progression, "Throwdowns: the event types found in {:.1f} s.", took);
+                    if (const auto others = ensure_types({event_criteria_attempt, event_slam_hit, event_leave_in_progress,
+                                                          event_onboarding_complete}, true);
+                        !others.empty())
+                        logging::log(logging::Level::info, logging::Channel::progression, "Throwdowns: other modes: {}", others);
                 }
             } catch (...) { l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release); }
             l.type_scan_running.store(false, std::memory_order_release);

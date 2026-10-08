@@ -112,4 +112,3 @@ be shared (see the Hall of Meat README).
 
 - Death Races between real players are tested by the relay's unit tests, not yet with several
   players in a live session: feedback from players of the fork will tell.
-- The camera light needs the main map (BAM), where the game loads its character light rig.

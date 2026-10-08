@@ -402,7 +402,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 s.last_error.clear();
             } catch (const std::exception &e) {
                 s.next_try = Clock::now() + retry_after;
-                if (s.last_error != e.what()) say(logging::Level::warning, std::string("Camera light unavailable: ") + e.what() + '.');
+                // Often only not yet (the skater is still being made as a map comes in): tried again.
+                if (s.last_error != e.what())
+                    say(logging::Level::info, std::format("Camera light: not there yet ({}); trying again in {} s.", e.what(), retry_after.count()));
                 s.last_error = e.what();
             }
         }

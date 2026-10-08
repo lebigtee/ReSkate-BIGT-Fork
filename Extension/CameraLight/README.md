@@ -12,8 +12,8 @@ The console has the same switch and a brightness:
 - `light gain <0.25-4>`: brighter or dimmer than usual (1)
 - `light status`
 
-The light needs the game's character light rig, which the main map (BAM) loads. Elsewhere the log
-says the light is unavailable.
+The light needs the game's character light rig, which the game keeps loaded in its maps (the city
+and the megapark have it). Where it is missing, the log says so and the light stays off.
 
 ## How it works
 
