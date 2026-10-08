@@ -37,6 +37,7 @@ add_library(dingosdk_overlay STATIC
     Extension/HallOfMeat/hall_of_meat_hud.cpp
     Extension/DeathRace/death_race_hud.cpp
     Extension/DeathRace/death_race_view.cpp
+    Extension/HallOfMeat/hall_of_meat_picture.cpp
     Extension/HallOfMeat/hall_of_meat_replay.cpp
     Extension/HallOfMeat/hall_of_meat_view.cpp
 )

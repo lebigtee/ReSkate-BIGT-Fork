@@ -97,7 +97,8 @@ Settings are kept in `%LOCALAPPDATA%\ReSkate\hallofmeat\hallofmeat.json`.
 - **The jerks**: purely visual. The overlay keeps a copy of the game's picture (on the GPU) 40
   times a second and puts it in place of the following pictures, before drawing over it; the X-ray
   is frozen with it to stay on the skater. The game itself runs at full speed: controls, physics
-  and network do not change. The copy is let go 3 s after.
+  and network do not change. The copy is let go 3 s after. `hall_of_meat_picture.cpp` does it, and
+  the replay below, on the overlay's command list before it draws.
 - **The replay (multiplayer)**: `hall_of_meat_replay.cpp`. The pictures of the start of the bail
   are kept on the GPU in 720p (a copy of the picture, then a reduction by a small shader,
   `hall_of_meat_replay.hlsl`, precompiled in `hall_of_meat_replay_shaders.h`), 80 times a second
@@ -169,6 +170,7 @@ enough, change `meat sensitivity` or the thresholds (`severity_thresholds` in `h
 | `hall_of_meat_view.cpp` | The snapshot the overlay reads (overlay library) |
 | `hall_of_meat_hud.cpp` | The drawing: the X-ray in sprites and the result panel |
 | `hall_of_meat_skeleton.h` | The parents of the animation skeleton's 395 joints |
+| `hall_of_meat_picture.cpp` | The jerks and the replay applied to the game's picture, before the overlay draws |
 | `hall_of_meat_replay.cpp`, `.hlsl` | The slow motion replay in a multiplayer session |
 | `assets/bones.png` | The three skeleton drawings, arranged in one sheet (1230 × 917) |
 | `assets/panel.png` | The panel's background (480 × 642) |

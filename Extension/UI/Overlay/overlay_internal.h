@@ -165,10 +165,6 @@ struct State {
     std::uint64_t rendered_frames = 0;
     std::vector<Frame> frames;
     std::vector<UINT64> upload_fences;
-    // The Hall of Meat's jerky bail: a copy of a frame's picture shown again over the next few.
-    ComPtr<ID3D12Resource> held_picture;
-    std::uint64_t held_picture_id = 0;
-    std::chrono::steady_clock::time_point held_picture_used{};
     ImGuiContext* context = nullptr;
     dingosdk::overlay::CallbacksV3 callbacks;
     dingosdk::overlay::Model model;
