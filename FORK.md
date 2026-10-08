@@ -95,6 +95,13 @@ a noun phrase naming its subject ("The rider's body at `at`…", "The races file
 why where it is not obvious; the numbers worth tuning are named constants with their meaning
 beside them (`death_race_internal.h`, `death_race_riders_internal.h`, `camera_light_native.cpp`).
 
+## License
+
+ReSkate is free software under the GNU General Public License v3 (`LICENSE`), and so is this fork:
+it is a modified version of ReSkate, changed from October 2026 on (its changes and their dates are
+its git history, on the `hall-of-meat` branch). Whoever shares its build shares its source with
+it, under the same license.
+
 ## Assets and licenses
 
 The Hall of Meat's skeleton drawings and panel were made for the mod. Before distributing the
