@@ -1,5 +1,5 @@
 #pragma once
-// How many race together and how they line up (death_race.h, death_race_riders.cpp).
+// How many race together and how they line up (death_race.h, death_race_riders_internal.h).
 namespace dingosdk::death_race {
 // Most racers a race takes, its host included (AI riders or other players), and how far apart
 // they line up on its start line (metres, side by side: the host in the middle).

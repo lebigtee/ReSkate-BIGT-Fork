@@ -54,7 +54,7 @@ Settings are kept in `%LOCALAPPDATA%\ReSkate\hallofmeat\hallofmeat.json`.
 - **The skeleton**: the skater's animation pose (`Animation/Dingo/AnimBase_Default_Skeleton`, 395
   joints, read as the first-person view reads it), composed into world coordinates every tick.
   The joints' parents are in `hall_of_meat_skeleton.h`, taken from the game's data by
-  `dingosdk_hall_of_meat_skeleton_dump` (CMake option `DINGOSDK_BUILD_HALL_OF_MEAT_TOOLS`).
+  `dingosdk_hall_of_meat_skeleton_dump` (CMake option `DINGOSDK_BUILD_FORK_TESTS`).
 - **The bail**: the first of these signs: the No Bail hook's wipeout counter
   (`watched_physics_state`), a falling physics state (300 to 399), or a slam seen on the skeleton
   alone (the pelvis suddenly loses 4 m/s or more, then the torso leans more than 60° from
@@ -178,7 +178,7 @@ enough, change `meat sensitivity` or the thresholds (`severity_thresholds` in `h
 | `Test/build_assets.ps1`, `HomAssets.cs` | Make the two pictures from the Procreate exports |
 | `Test/skeleton_spec.py` | The joints measured on the drawings; prints the code's tables |
 | `Test/HomPreview.cs`, `probe_preview.py` | The preview outside the game on recorded poses |
-| `Test/skeleton_dump.cpp` | The tool that reads the skeleton from the game's data |
+| `Test/skeleton_dump.cpp` | The tool that reads the game's data: asset names, and an asset's fields with their offsets |
 | `Test/replay_test.cpp`, `replay_plan.py` | The replay's test on WARP, and its plan's simulation |
 | `Test/probe_*.py` | Reading `meat probe` recordings (the contacts' layout, real bails replayed) |
 

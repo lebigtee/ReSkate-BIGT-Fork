@@ -32,7 +32,7 @@ struct Moment {
     std::uint32_t state{};
 };
 // Recording the local skater, 20 poses a second, until line_stop; the line starts on the board.
-// Its plain riding also goes into the riders' riding library (death_race_riders.cpp).
+// The skater's plain riding also goes into the riders' riding library (death_race_library.cpp).
 void line_start(double now);
 void line_capture(std::uintptr_t base, std::uintptr_t client, double now, const Moment &moment);
 // The ride from the moment the skater set off on its board; null when too short (or nothing

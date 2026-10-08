@@ -1,7 +1,8 @@
 // Finds and prints the game's skeleton assets, to build hall_of_meat_skeleton.h from the
 // Animation/Dingo/AnimBase_Default_Skeleton the skater's pose uses.
 //   dingosdk_hall_of_meat_skeleton_dump <Skate folder> [<word>]          ebx names containing the word ("skeleton")
-//   dingosdk_hall_of_meat_skeleton_dump <Skate folder> --dump <asset name>  every field of the asset, arrays in full
+//   dingosdk_hall_of_meat_skeleton_dump <Skate folder> --dump <asset name>  every field of the asset (with its offset
+//                                                                           in its instance), arrays in full
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
 #include <algorithm>
@@ -19,10 +20,14 @@ std::string lower(std::string_view text) {
     std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return result;
 }
+// The document being printed, for its fields' offsets.
+const ebx::Document *printed{};
 void print(const ebx::Value &value, int depth, const std::string &indent);
 void print(const ebx::Object &object, int depth, const std::string &indent) {
     for (const auto &field : object.fields) {
-        std::cout << indent << (field.name.empty() ? "?" : field.name) << " = ";
+        std::cout << indent << (field.name.empty() ? "?" : field.name);
+        if (printed && field.descriptor < printed->fields.size()) std::cout << " (+0x" << std::hex << printed->fields[field.descriptor].dataOffset << std::dec << ")";
+        std::cout << " = ";
         print(field.value, depth, indent);
     }
 }
@@ -87,6 +92,7 @@ int main(int argc, char **argv) {
                     std::cerr << bundle->manifest.ebx[i].name << " (" << relative << ", " << listed.name << "): root type "
                               << document.rootType << ", " << document.instances.size() << " instances\n";
                     std::size_t number{};
+                    printed = &document;
                     for (const auto &instance : document.instances) {
                         const auto type = instance.descriptor >= 0 && static_cast<std::size_t>(instance.descriptor) < document.types.size()
                             ? document.types[static_cast<std::size_t>(instance.descriptor)].name : std::string("?");

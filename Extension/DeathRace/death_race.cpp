@@ -1,5 +1,4 @@
-#include "death_race.h"
-#include "death_race_riders.h"
+#include "death_race_internal.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Abi/native_data.h"
@@ -32,221 +31,12 @@
 #include <random>
 #include <tuple>
 
-// Game thread only. See death_race.h.
-namespace dingosdk::death_race {
-namespace {
-using Clock = std::chrono::steady_clock;
-// Countdown: stopped on a start flag for this long (slower than this) starts it.
-constexpr double countdown_length = 3.0;
-constexpr float stopped_speed = 3.0f;   // metres per second
-// A race opened as a throwdown starts with the game's own countdown: its clock starts when the
-// skater sets off after the throwdown began (or after this long, for one who waits).
-// The game's own GO, this long after the throwdown began (its intro, then its 3, 2, 1): the clock
-// and the AI riders start then, and the skater goes onto its board on the start line just before.
-constexpr double native_go = 9.7, board_before_go = 0.6;
-
-// The throwdown's zone reaches past the race's farthest flag by this much.
-constexpr float zone_margin = 25.0f;
-// The skater's physics states off its board: walking, and falling.
-constexpr std::uint32_t offboard_state = 504, wipeout_state = 300, ground_state = 100;
-// After a fall the skater is getting over it until it has rolled on the ground this long.
-constexpr double recovered_after = 0.5;
-// A Death Race's queue counts down this long once it has its players (the AI riders fill it at
-// once), so rivals have time to come and the host can start it sooner. The game's own setting,
-// put back after.
-constexpr const char *queue_timer_setting = "DingoThrowdowns.QueueStartTimer";
-constexpr const char *race_queue_seconds = "30";
-constexpr float teleport_distance = 8.0f; // in one tick: a teleport, not riding
-// A bail in a race: the skater lies there this long, then is put back on its board where it rode
-// this long before it fell (from the places it rode through, kept this long), facing the way it
-// went. Its own teleport ends no race.
-constexpr double respawn_after = 2.2, respawn_back = 1.0, respawn_kept = 8.0, respawn_landing = 3.0;
-// The race's throwdown runs as long as a Skate Jam may (its timer kept off the screen); it ends
-// when everyone has crossed the line. Everyone's score is where they finished: this much a place
-// ahead of last, nothing for not finishing.
-constexpr int throwdown_timer = 300, points_a_place = 100;
-// The game shows its results as a throwdown ends: the race's text stays for them this long.
-constexpr double dressed_after = 30.0;
-// Everyone in, the race ends once the skater is up (if it fell), waiting no longer than this.
-constexpr double longest_end_wait = 6.0;
-// The AI riders' names, drawn anew for each race.
-constexpr std::array<const char *, 16> rider_names{"Dex", "Mika", "Juno", "Kaz", "Nico", "Tess", "Rook", "Bo",
-                                                   "Vince", "Lola", "Ozzy", "Remy", "Sasha", "Theo", "Wren", "Zed"};
-// Their player records, by rider (0: none yet); read by the game's UI lookups (rider_info).
-std::array<std::atomic<std::uint64_t>, 4> rider_records{};
-// A player record (UIPlayerInfo) for a rider: what the game's leaderboards show of a player (its
-// name), as ReSkate's party records are made (Extension/Multiplayer/Hud/native_party.cpp), with
-// nothing else of the party's. Made once per UI model manager; `made` keeps it. Game thread.
-struct RiderRecord {
-    std::uintptr_t manager{};
-    std::uint64_t handle{};
-    std::string name;
-};
-std::uint64_t rider_record(std::uintptr_t base, std::uint32_t player_id, const std::string &name, RiderRecord &made) {
-    namespace engine = addr::engine;
-    auto &n = game::native_data().models;
-    if (!n.create || !n.value || !n.publish || !game::native_data().values.assign) return 0;
-    std::uintptr_t ui{}, manager{};
-    if (!memory::read(base + engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return 0;
-    game::ModelWriteLock lock(manager);
-    if (made.manager == manager && made.handle && made.name == name && n.value(manager, made.handle, 0, 0)) return made.handle;
-    if (made.manager != manager || !made.handle || !n.value(manager, made.handle, 0, 0)) {
-        // Keyed apart from any player's: "RDR" and the rider's native id.
-        made.handle = n.create(manager, base + engine::player_info_type, 0x5244520000000000ULL | player_id,
-                               game::native_name_hash("ReSkate.DeathRaceRider"), false, 2);
-        made.manager = manager;
-        if (!made.handle) return 0;
-    }
-    alignas(8) std::array<std::byte, 0x108> info{};
-    reinterpret_cast<void (*)(void *)>(base + engine::card_info_construct)(info.data());
-    const auto put = [&](std::size_t offset, auto value) { std::memcpy(info.data() + offset, &value, sizeof(value)); };
-    std::uintptr_t text{};
-    game::native_data().values.assign(&text, name.c_str(), static_cast<std::uint32_t>(name.size()));
-    put(0x28, text);
-    put(0x38, text);
-    put(0x40, 0x5244520000000000ULL | player_id);
-    put(0x4c, player_id);
-    put(0xa0, made.handle);
-    put(0x95, std::uint8_t{1});  // unlocked
-    put(0xcc, std::uint32_t{1}); // not a friend
-    put(0xf0, std::uint32_t{4}); // online
-    put(0xf4, std::uint32_t{4}); // on Steam (no EA logo beside the name)
-    put(0xc0, std::int32_t{-1}); // no party colour
-    put(0xdc, std::int32_t{-1}); // no voice
-    put(0x100, true);            // present
-    const bool published = n.publish(manager, made.handle, base + engine::player_info_type, info.data());
-    if (text) reinterpret_cast<void (*)(std::uintptr_t *)>(base + engine::native_text_release)(&text);
-    if (!published || !n.value(manager, made.handle, 0, 0)) {
-        made.handle = 0;
-        return 0;
-    }
-    made.name = name;
-    return made.handle;
-}
-constexpr double longest_race = 20 * 60.0;
-constexpr auto result_shown = std::chrono::seconds(7), notice_shown = std::chrono::seconds(4);
-// The tile opens the race whose start flag is this close.
-constexpr float open_radius = 15.0f;
-// From the tile's press, the game's throwdown placement has this long to begin.
-constexpr double carrier_wait = 180.0;
-// A Skate Jam placed this soon after the cursor was on the tile is the race's.
-constexpr double focus_wait = 20.0;
-// The AI riders' player ids in the race's throwdown: virtual participants, clear of the other
-// players' (0x300 + session slot) and of coop challenges' (0x3c1 on).
-constexpr std::uint32_t rider_base = 0x3e0;
-// The props that stand for a race: the game's own build-kit objects (the Object Dropper's).
-constexpr const char *start_prop = "own_bkprops_generic_startline_00001";
-constexpr const char *finish_prop = "own_bkprops_generic_finishline_00001";
-constexpr const char *checkpoint_prop = "own_bkprops_generic_slalomflag_00001";
-constexpr float gate_half_width = 3.5f; // a checkpoint's two flags, either side of its point
-
-struct State {
-    bool loaded{};
-    std::map<std::string, std::vector<Race>> maps; // by level
-    std::string level;
-    std::uintptr_t base{};
-    int selected = -1;
-    // A new race being set: its start, then checkpoints.
-    bool building{};
-    std::vector<Vec3> draft;
-    // The race in progress.
-    Phase phase{};
-    int active = -1;
-    double phase_started{}; // real seconds: the countdown's or the race's start
-    std::size_t next{};
-    double time{}, previous_best{};
-    bool record{};
-    bool armed_away{true}; // left every start flag since the last race: a stop on one may start it
-    // A race opened as a throwdown from the tile: the race, when, and how far the game's
-    // throwdown got (placed, then set up). When that throwdown starts, so does the race.
-    struct Carrier {
-        int race = -1;
-        double since{};
-        bool created{}, configured{};
-        std::uint32_t mmid{};
-        int riders{}, riders_in{}; // AI riders it takes, and those already in its queue
-        bool riders_off{};         // they stepped aside for other players who joined
-        bool done{};               // its race was run to the finish
-    } carrier;
-    bool carried{}; // the race in progress was started by its throwdown
-    int focus_race = -1; // the race the tile last offered under the cursor, and when
-    double focus_at{};
-    bool solo_on_stop{}; // `race solo on`: a stop on the shown race's start line counts it down alone
-    int riders{};        // AI riders in the races opened (0 to 4)
-    // A teleport we asked for lands a few ticks later: no arming from where the skater was.
-    double no_arm_until{};
-    float heading{};       // the skater's, degrees (0 = +Z)
-    float draft_heading{}; // the new race's start faces this way until its next point is set
-    // The props last handed over, when, and how many stand.
-    std::vector<NetworkObject> props;
-    double props_at{};
-    bool props_live{};
-    Clock::time_point result_until{}, notice_until{};
-    std::string notice;
-    // The skater.
-    bool skater{};
-    Vec3 position{};
-    float speed{};
-    std::optional<Vec3> last_position;
-    std::uintptr_t client{};
-    // The race's start teleport (0: none due) and when the skater has landed from it.
-    double start_teleport_at{}, go_at{};
-    // The lines the races' AI riders ride (death_race_riders.h), by map and race name; the one
-    // they ride now; what is being recorded (the ride setting a finish, or a run); the go for the
-    // riders (the throwdown's countdown or the skater's own set-off, whichever comes first).
-    std::map<std::string, std::shared_ptr<const Line>> lines;
-    std::shared_ptr<const Line> riding;
-    enum class Recording { none, route, run } recording{};
-    double riders_go_at{};
-    std::optional<std::string> queue_timer_before; // the queue countdown setting while a race has its own
-    int place{}, racers{}; // the last finish: the skater's place among how many
-    std::uint32_t physics_state{};
-    std::uint64_t falls_seen{}; // the skater's falls counted so far (no_bail.h)
-    bool falls_known{};
-    bool recovering{}; // from a fall until it rolls again (recovered_after)
-    double rolling_since{};
-    // The scores written to the race's throwdown (by player), and when next; its end asked for.
-    std::map<std::uint32_t, std::int32_t> scores;
-    double next_scores{};
-    bool ending{};
-    double all_in_at{}; // when everyone had crossed the line (0: not yet)
-    std::uint64_t markers_refused{}; // session marker teleports refused so far (to tell of new ones)
-    // Races with other players (Extension/Throwdowns/throwdown_relay.cpp). The race in progress has
-    // other players in it, and its racers as the relay last told (kept for the results once it lets
-    // go); the other player's race last begun here, and the last one announced; near or in another
-    // player's race on offer (the Jam's text reads as the race's).
-    bool linked{};
-    std::optional<multiplayer::RunningRace> link;
-    std::pair<std::uint64_t, std::uint32_t> begun{}, announced{};
-    bool linked_dress{};
-    std::map<std::pair<std::uint64_t, std::uint32_t>, bool> unreadable; // offers already said to be of no use here
-    double dress_until{}; // the race's text stays this long after its throwdown ends
-    std::array<std::string, 4> names; // the riders' this race
-    std::array<RiderRecord, 4> records;
-    double next_records{};
-    // Racing: where the skater rode on its board lately (when, where, facing); a bail's respawn,
-    // when due, to where and facing which way; until when its teleport is no reason to stop.
-    struct Place {
-        double t{};
-        Vec3 at{};
-        float heading{};
-    };
-    std::vector<Place> rode;
-    double respawn_at{}, respawn_landing_until{};
-    Place respawn_to;
-};
+// Game thread only. See death_race.h; the files sharing the state are listed in death_race_internal.h.
+namespace dingosdk::death_race::detail {
 State &state() {
     static auto *value = new State;
     return *value;
 }
-// What reaches the game thread from elsewhere: the tile's press (the game's UI) and the
-// throwdown observations (its network sends and server). Drained by tick().
-struct Inbox {
-    std::mutex mutex;
-    std::optional<std::pair<TileAction, int>> pressed;
-    std::optional<int> focused;
-    std::vector<std::tuple<Throwdown, std::string, std::uint32_t>> events;
-};
 Inbox &inbox() {
     static auto *value = new Inbox;
     return *value;
@@ -280,17 +70,6 @@ std::filesystem::path races_path() {
     if (raw) CoTaskMemFree(raw);
     return result;
 }
-Json point_json(const Vec3 &p) { return Json::array({p[0], p[1], p[2]}); }
-std::optional<Vec3> point_of(const Json &j) {
-    if (!j.is_array() || j.size() != 3) return std::nullopt;
-    Vec3 p{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        if (!j.at(i).is_number()) return std::nullopt;
-        p[i] = j.at(i).get<float>();
-        if (!std::isfinite(p[i])) return std::nullopt;
-    }
-    return p;
-}
 void load(State &s) {
     if (s.loaded) return;
     s.loaded = true;
@@ -299,34 +78,9 @@ void load(State &s) {
         if (!file) return;
         const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
         if (text.empty() || text.size() > 4 * 1024 * 1024) return;
-        const auto json = Json::parse(text);
-        if (!json.is_object() || !json.contains("maps") || !json.at("maps").is_object()) return;
+        s.maps = races_from_json(text);
         std::size_t count{};
-        for (const auto &[level, list] : json.at("maps").items()) {
-            if (!list.is_array()) continue;
-            auto &into = s.maps[level];
-            for (std::size_t i = 0; i < list.size() && into.size() < 100; ++i) {
-                const auto &r = list.at(i);
-                if (!r.is_object() || !r.contains("start") || !r.contains("finish")) continue;
-                const auto start = point_of(r.at("start")), finish = point_of(r.at("finish"));
-                if (!start || !finish) continue;
-                Race race;
-                race.name = r.value("name", std::string("Race"));
-                if (race.name.empty() || race.name.size() > 64) race.name = "Race";
-                race.start = *start;
-                race.finish = *finish;
-                if (r.contains("checkpoints") && r.at("checkpoints").is_array())
-                    for (std::size_t c = 0; c < r.at("checkpoints").size() && race.checkpoints.size() < 32; ++c)
-                        if (const auto p = point_of(r.at("checkpoints").at(c))) race.checkpoints.push_back(*p);
-                race.best = std::max(0.0, r.value("best", 0.0));
-                if (r.contains("heading") && r.at("heading").is_number()) {
-                    race.heading = r.at("heading").get<float>();
-                    race.has_heading = std::isfinite(race.heading);
-                }
-                into.push_back(std::move(race));
-                ++count;
-            }
-        }
+        for (const auto &[level, list] : s.maps) count += list.size();
         say(std::format("Death Race: {} race(s) loaded.", count));
     } catch (...) {
         say("Death Race: races.json is damaged; it is left as it is and not read.");
@@ -337,35 +91,13 @@ void save(const State &s) {
     try {
         const auto path = races_path();
         if (path.empty()) return;
-        auto maps = Json::object();
-        for (const auto &[level, list] : s.maps) {
-            if (list.empty()) continue;
-            auto out = Json::array();
-            for (const auto &race : list) {
-                if (race.from) continue; // another player's
-                auto r = Json::object();
-                r["name"] = race.name;
-                r["start"] = point_json(race.start);
-                auto checkpoints = Json::array();
-                for (const auto &c : race.checkpoints) checkpoints.push_back(point_json(c));
-                r["checkpoints"] = std::move(checkpoints);
-                r["finish"] = point_json(race.finish);
-                r["best"] = race.best;
-                if (race.has_heading) r["heading"] = race.heading;
-                out.push_back(std::move(r));
-            }
-            maps[level] = std::move(out);
-        }
-        auto json = Json::object();
-        json["schema"] = 1;
-        json["maps"] = std::move(maps);
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
         auto temporary = path;
         temporary += L".tmp";
         {
             std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-            file << json.dump(2);
+            file << races_to_json(s.maps);
             if (!file) return;
         }
         std::filesystem::rename(temporary, path, error);
@@ -399,48 +131,6 @@ void stop(State &s, const char *why) {
     }
     set_racing(false);
 }
-void write_scores(State &s, double now, bool now_or_never = false);
-// Everyone has crossed the line: the race's throwdown ends for everyone.
-void end_when_everyone_is_in(State &s) {
-    if (!s.carried || s.phase != Phase::finished || s.ending) return;
-    bool in{};
-    if (s.linked && s.link) {
-        // With other players: each has crossed the line, quit, or left the session.
-        in = std::all_of(s.link->racers.begin(), s.link->racers.end(),
-                         [](const multiplayer::RaceRacer &r) { return r.local || r.finish > 0 || r.out; });
-    } else {
-        const auto times = rider_finishes(s.carrier.riders_in);
-        in = std::none_of(times.begin(), times.end(), [](double t) { return t < 0; });
-    }
-    if (!in) {
-        s.all_in_at = 0;
-        return;
-    }
-    // Not while the skater lies on the ground (its bodies against the riders, the finish arch):
-    // once it is up again, or after a while all the same.
-    const double now = seconds();
-    if (!s.all_in_at) s.all_in_at = now;
-    const bool down = s.recovering || s.physics_state == wipeout_state;
-    if (down && now - s.all_in_at < longest_end_wait) return;
-    s.ending = true;
-    // Everyone's final score first (the last one in may not have its own yet): the results show them.
-    write_scores(s, seconds(), true);
-    // The skater leaves it first (as Quit does), then it ends as one of its riders. Every "you
-    // left" that comes of it is kept from the skater: the race's own result says how it went.
-    multiplayer::quiet_leave_confirmations(3000);
-    if (s.linked && s.link) {
-        // With other players, as one of them: each machine ends its own copy once all are in.
-        multiplayer::throwdown_relay_end_race();
-        say("Death Race: everyone has crossed the line; the race's throwdown ends here.");
-        return;
-    }
-    const auto id = multiplayer::local_native_player_id();
-    const bool left = id && multiplayer::queue_challenge_leave(id);
-    const bool ended = s.carrier.riders_in > 0 ? multiplayer::queue_throwdown_destroy_event(rider_base + 1)
-                                               : id && multiplayer::queue_throwdown_destroy_event(id);
-    say(std::format("Death Race: everyone has crossed the line; the throwdown ends ({}{}).", left ? "the skater left it" : "the skater could not leave it",
-                    ended ? ", ended" : ", could not be ended"));
-}
 // A race over (its throwdown ended): it goes, flags and all, as if never set; the tile offers a
 // new one.
 void remove_race(State &s, int index) {
@@ -467,237 +157,8 @@ void forget(State &s, int index) {
     say(std::format("Death Race: {} is over; its flags come down.", name));
 }
 
-// ---- races with other players (Extension/Throwdowns/throwdown_relay.cpp) -------------------------
-// Another player's race stands last in this map's list (Race::from) while it is shown or run here.
-int linked_index() {
-    const auto &list = races();
-    for (std::size_t i = 0; i < list.size(); ++i)
-        if (list[i].from) return static_cast<int>(i);
-    return -1;
-}
-// A new race of the player's own goes ahead of it.
-int add_race(State &s, Race race) {
-    auto &list = races();
-    const int linked = linked_index();
-    const int at = linked >= 0 ? linked : static_cast<int>(list.size());
-    list.insert(list.begin() + at, std::move(race));
-    const auto shift = [&](int &i) {
-        if (i >= at) ++i;
-    };
-    shift(s.selected);
-    shift(s.focus_race);
-    shift(s.active);
-    shift(s.carrier.race);
-    return at;
-}
-// A racer's place across the start line: the host in the middle, the others either side.
-float lane_offset(std::size_t lane) {
-    if (!lane) return 0.0f;
-    const float step = lane_spacing * static_cast<float>((lane + 1) / 2);
-    return lane % 2 ? step : -step;
-}
-// A race for the other players: the map, its name and its flags.
-constexpr std::uint8_t race_format = 1;
-std::vector<std::uint8_t> encode_race(const std::string &level, const Race &race) {
-    std::vector<std::uint8_t> out{race_format};
-    const auto text = [&](const std::string &value, std::size_t most) {
-        const auto n = std::min(value.size(), most);
-        out.push_back(static_cast<std::uint8_t>(n));
-        out.insert(out.end(), value.begin(), value.begin() + static_cast<std::ptrdiff_t>(n));
-    };
-    const auto number = [&](float value) {
-        std::uint32_t bits{};
-        std::memcpy(&bits, &value, sizeof(bits));
-        for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>(bits >> (8 * i)));
-    };
-    const auto point = [&](const Vec3 &p) {
-        for (const auto v : p) number(v);
-    };
-    text(level, 255);
-    text(race.name, 64);
-    point(race.start);
-    point(race.finish);
-    number(race.heading);
-    out.push_back(race.has_heading ? 1 : 0);
-    const auto count = std::min<std::size_t>(race.checkpoints.size(), 32);
-    out.push_back(static_cast<std::uint8_t>(count));
-    for (std::size_t i = 0; i < count; ++i) point(race.checkpoints[i]);
-    return out;
-}
-std::optional<std::pair<std::string, Race>> decode_race(const std::vector<std::uint8_t> &bytes) {
-    std::size_t at{};
-    bool ok = true;
-    const auto byte = [&]() -> std::uint8_t {
-        if (at >= bytes.size()) {
-            ok = false;
-            return 0;
-        }
-        return bytes[at++];
-    };
-    const auto text = [&](std::size_t most) {
-        const std::size_t n = byte();
-        if (!ok || n > most || n > bytes.size() - at) {
-            ok = false;
-            return std::string();
-        }
-        std::string value(reinterpret_cast<const char *>(bytes.data() + at), n);
-        at += n;
-        return value;
-    };
-    const auto number = [&]() {
-        std::uint32_t bits{};
-        for (int i = 0; i < 4; ++i) bits |= std::uint32_t{byte()} << (8 * i);
-        float value{};
-        std::memcpy(&value, &bits, sizeof(value));
-        if (!std::isfinite(value) || std::abs(value) > 1e6f) ok = false;
-        return value;
-    };
-    const auto point = [&]() {
-        Vec3 p{};
-        for (auto &v : p) v = number();
-        return p;
-    };
-    if (byte() != race_format) return std::nullopt;
-    std::pair<std::string, Race> out;
-    out.first = text(255);
-    auto &race = out.second;
-    race.name = text(64);
-    race.start = point();
-    race.finish = point();
-    race.heading = number();
-    race.has_heading = byte() != 0;
-    const std::size_t count = byte();
-    if (count > 32) return std::nullopt;
-    for (std::size_t i = 0; i < count && ok; ++i) race.checkpoints.push_back(point());
-    if (!ok || at != bytes.size() || race.name.empty()) return std::nullopt;
-    return out;
-}
-// Another player's races on offer: the one the player joined, else the nearest within this
-// reach of its start, stands here (its flags, its name; the Jam's text reads as a race's near
-// its flag), unless the player is busy with a race of its own.
-constexpr float offer_reach = 150.0f;
-void follow_offers(State &s) {
-    if (s.phase != Phase::idle || s.carried || s.carrier.created || s.building) {
-        s.linked_dress = false;
-        return;
-    }
-    const auto offers = multiplayer::throwdown_relay_race_offers();
-    const multiplayer::RaceOffer *chosen = nullptr;
-    std::optional<Race> race;
-    float nearest = offer_reach;
-    for (const auto &offer : offers) {
-        auto decoded = decode_race(offer.race);
-        if (!decoded || decoded->first != s.level) {
-            if (!s.unreadable[{offer.leader, offer.id}])
-                say(std::format("Death Race: {}'s race {} (map {}).", offer.leader_name, decoded ? "is on another map" : "could not be read",
-                                decoded ? decoded->first : std::string("?")));
-            s.unreadable[{offer.leader, offer.id}] = true;
-            continue;
-        }
-        const bool had_joined = chosen && chosen->joined;
-        const float d = across(s.position, decoded->second.start);
-        if (offer.joined ? had_joined : (had_joined || d >= nearest)) continue;
-        chosen = &offer;
-        nearest = offer.joined ? 0.0f : d;
-        race = std::move(decoded->second);
-    }
-    auto &list = races();
-    int index = linked_index();
-    if (index >= 0 && (!chosen || list[index].from != chosen->leader || list[index].from_id != chosen->id)) {
-        remove_race(s, index);
-        index = -1;
-    }
-    if (!chosen) {
-        s.linked_dress = false;
-        return;
-    }
-    if (index < 0) {
-        race->from = chosen->leader;
-        race->from_id = chosen->id;
-        race->best = 0;
-        race->name = std::format("{}'s {}", chosen->leader_name, race->name);
-        list.push_back(std::move(*race));
-        index = static_cast<int>(list.size()) - 1;
-        s.selected = index;
-        const std::pair key{chosen->leader, chosen->id};
-        if (s.announced != key) {
-            s.announced = key;
-            tell(s, std::format("{} is open: join it at its flag to race.", list[index].name));
-        }
-    }
-    s.linked_dress = chosen->joined || across(s.position, list[index].start) <= open_radius * 2;
-}
-// The race of the carrier's throwdown counts down: on foot through the game's intro and countdown
-// (no rolling away down a slope), on the board on the start line just before its GO, which starts
-// the clock and the riders.
-void begin_carried(State &s, double now) {
-    if (s.phase == Phase::countdown || s.phase == Phase::racing) stop(s, "restarted");
-    s.phase = Phase::countdown;
-    s.active = s.carrier.race;
-    s.selected = s.carrier.race;
-    s.carried = true;
-    s.phase_started = now;
-    s.armed_away = false;
-    s.go_at = now + native_go;
-    s.start_teleport_at = s.go_at - board_before_go;
-    s.riders_go_at = s.go_at;
-    s.linked = false;
-    s.link.reset();
-    set_racing(true);
-    say(std::format("Death Race: {} counting down (its throwdown started).", races()[s.active].name));
-}
-// The relay's running race: the racers of the race in progress (the local player's own, or another
-// player's, which starts here as its throwdown's copy does).
-void follow_running(State &s, double now) {
-    auto running = multiplayer::throwdown_relay_running_race();
-    if (!running) {
-        s.begun = {};
-        return;
-    }
-    const std::pair key{running->leader, running->id};
-    const bool leader = !running->racers.empty() && running->racers.front().local;
-    if (s.carried && (leader || s.begun == key)) {
-        s.link = std::move(running);
-        s.linked = s.link->racers.size() >= 2;
-        return;
-    }
-    if (leader || s.begun == key) return;
-    s.begun = key;
-    const int index = linked_index();
-    if (index < 0 || races()[index].from != running->leader || races()[index].from_id != running->id) {
-        say("Death Race: another player's race started here, but its flags never came: it is a plain Skate Jam here.");
-        return;
-    }
-    s.carrier = {};
-    s.carrier.race = index;
-    s.carrier.since = now;
-    s.carrier.created = true;
-    s.carrier.configured = true;
-    s.riding.reset(); // no AI riders in another player's race
-    begin_carried(s, now);
-    s.link = std::move(running);
-    s.linked = true;
-    say(std::format("Death Race: racing {} with {} player(s).", races()[index].name, s.link->racers.size()));
-}
-// With other players: the place among them, by their times as they come in.
-void link_place(State &s) {
-    if (!s.linked || !s.link || s.phase != Phase::finished) return;
-    const auto mine = static_cast<std::int32_t>(std::lround(s.time * 1000.0));
-    s.racers = static_cast<int>(s.link->racers.size());
-    s.place = 1;
-    for (const auto &racer : s.link->racers)
-        if (!racer.local && racer.finish > 0 && racer.finish < mine) ++s.place;
-}
-// The AI riders a race takes: in a session with other players, room stays for them (one who joins
-// never fills the queue with the riders, which would start it at once; see queue_players).
-int riders_for(const State &s) {
-    return multiplayer::throwdown_relay_linked() ? std::min(s.riders, most_racers - 3) : s.riders;
-}
 std::size_t flags_of(const Race &race) { return race.checkpoints.size() + 1; }
 const Vec3 &flag_at(const Race &race, std::size_t next) { return next < race.checkpoints.size() ? race.checkpoints[next] : race.finish; }
-
-float facing(const Vec3 &from, const Vec3 &to, float otherwise);
-Vec3 grounded(const State &s, const Vec3 &at);
 
 void advance(State &s, double now) {
     auto &list = races();
@@ -878,51 +339,6 @@ int start_near(State &s) {
     return across(s.position, start) <= open_radius && std::abs(s.position[1] - start[1]) <= open_radius ? s.selected : -1;
 }
 
-// ---- the throwdown's scores ---------------------------------------------------------------------
-// Each second while a throwdown's race runs: everyone's score is where they finished (the game's
-// own results rank by it), the skater's tricks counting for nothing.
-void write_scores(State &s, double now, bool now_or_never) {
-    if (!s.carried || (s.phase != Phase::racing && s.phase != Phase::finished) || (now < s.next_scores && !now_or_never)) return;
-    s.next_scores = now + 1.0;
-    std::vector<std::pair<double, std::uint32_t>> finished; // time, player
-    std::vector<std::uint32_t> players;
-    const auto me = multiplayer::local_native_player_id();
-    if (s.linked && s.link) {
-        // With other players: everyone's place, from the finishes every machine has (the same).
-        for (const auto &racer : s.link->racers) {
-            const auto id = racer.local ? me : racer.id;
-            if (!id) continue;
-            players.push_back(id);
-            if (racer.local ? s.phase == Phase::finished : racer.finish > 0)
-                finished.emplace_back(racer.local ? s.time : racer.finish / 1000.0, id);
-        }
-    } else {
-        const int count = s.carrier.riders_in;
-        if (me) {
-            players.push_back(me);
-            if (s.phase == Phase::finished) finished.emplace_back(s.time, me);
-        }
-        const auto times = rider_finishes(count);
-        for (int i = 0; i < count; ++i) {
-            const auto id = rider_base + 1 + static_cast<std::uint32_t>(i);
-            players.push_back(id);
-            if (i < static_cast<int>(times.size()) && times[static_cast<std::size_t>(i)] >= 0)
-                finished.emplace_back(times[static_cast<std::size_t>(i)], id);
-        }
-    }
-    std::sort(finished.begin(), finished.end());
-    const auto racers = static_cast<std::int32_t>(players.size());
-    for (const auto id : players) {
-        std::int32_t points{};
-        for (std::size_t rank = 0; rank < finished.size(); ++rank)
-            if (finished[rank].second == id) points = (racers - static_cast<std::int32_t>(rank)) * points_a_place;
-        // The skater's own each time (its tricks add to it); the riders' when it changes.
-        const auto known = s.scores.find(id);
-        if (id != me && known != s.scores.end() && known->second == points) continue;
-        if (multiplayer::queue_throwdown_score(id, points)) s.scores[id] = points;
-    }
-}
-
 // ---- a bail's respawn -------------------------------------------------------------------------
 // While racing: the places the skater rides through on its board; a bail puts it back on its
 // board a moment before it, facing the way it went, once it has lain there a little.
@@ -960,292 +376,53 @@ void respawn(State &s, double now, bool on_board, bool fell) {
     say(std::format("Death Race: back on the board after the bail{}.", sent ? "" : " (the teleport is unavailable)"));
 }
 
-// ---- the props ---------------------------------------------------------------------------------
-// Facing from `from` to `to` (degrees, the trainer's heading), or `otherwise` when they meet.
-float facing(const Vec3 &from, const Vec3 &to, float otherwise) {
-    const float dx = to[0] - from[0], dz = to[2] - from[2];
-    if (std::hypot(dx, dz) < 0.5f) return otherwise;
-    return std::atan2(dx, dz) * 180.0f / std::numbers::pi_v<float>;
-}
-// A flag's place on the ground: flags are set where the skater stood (on its board, above the
-// ground), so the game's rays find the ground under it, once per place (before its prop stands
-// there to be found instead): the middle of what a few rays round it strike, leaving out the
-// skater's own body.
-Vec3 grounded(const State &s, const Vec3 &at) {
-    static std::map<std::array<int, 3>, float> found; // by place, to the centimetre
-    const std::array<int, 3> key{static_cast<int>(std::lround(at[0] * 100.0f)), static_cast<int>(std::lround(at[1] * 100.0f)),
-                                 static_cast<int>(std::lround(at[2] * 100.0f))};
-    if (const auto known = found.find(key); known != found.end()) return {at[0], known->second, at[2]};
-    std::vector<float> heights;
-    bool asked{};
-    for (const auto &[dx, dz] : {std::pair{0.0f, 0.0f}, {0.8f, 0.0f}, {-0.8f, 0.0f}, {0.0f, 0.8f}, {0.0f, -0.8f}}) {
-        const auto ray = cast_world_ray({at[0] + dx, at[1] + 1.0f, at[2] + dz}, {at[0] + dx, at[1] - 3.0f, at[2] + dz});
-        asked = asked || ray.cast;
-        if (!ray.hit) continue;
-        const bool body = s.skater && std::hypot(ray.at[0] - s.position[0], ray.at[2] - s.position[2]) < 0.6f &&
-                          ray.at[1] > s.position[1] - 0.3f;
-        if (!body) heights.push_back(ray.at[1]);
+namespace {
+std::uint64_t rider_record(std::uintptr_t base, std::uint32_t player_id, const std::string &name, RiderRecord &made) {
+    namespace engine = addr::engine;
+    auto &n = game::native_data().models;
+    if (!n.create || !n.value || !n.publish || !game::native_data().values.assign) return 0;
+    std::uintptr_t ui{}, manager{};
+    if (!memory::read(base + engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return 0;
+    game::ModelWriteLock lock(manager);
+    if (made.manager == manager && made.handle && made.name == name && n.value(manager, made.handle, 0, 0)) return made.handle;
+    if (made.manager != manager || !made.handle || !n.value(manager, made.handle, 0, 0)) {
+        // Keyed apart from any player's: "RDR" and the rider's native id.
+        made.handle = n.create(manager, base + engine::player_info_type, 0x5244520000000000ULL | player_id,
+                               game::native_name_hash("ReSkate.DeathRaceRider"), false, 2);
+        made.manager = manager;
+        if (!made.handle) return 0;
     }
-    if (!asked) return at; // no rays yet: as set, and asked again
-    float height = at[1];
-    if (!heights.empty()) {
-        std::sort(heights.begin(), heights.end());
-        height = heights[heights.size() / 2];
+    alignas(8) std::array<std::byte, 0x108> info{};
+    reinterpret_cast<void (*)(void *)>(base + engine::card_info_construct)(info.data());
+    const auto put = [&](std::size_t offset, auto value) { std::memcpy(info.data() + offset, &value, sizeof(value)); };
+    std::uintptr_t text{};
+    game::native_data().values.assign(&text, name.c_str(), static_cast<std::uint32_t>(name.size()));
+    put(0x28, text);
+    put(0x38, text);
+    put(0x40, 0x5244520000000000ULL | player_id);
+    put(0x4c, player_id);
+    put(0xa0, made.handle);
+    put(0x95, std::uint8_t{1});  // unlocked
+    put(0xcc, std::uint32_t{1}); // not a friend
+    put(0xf0, std::uint32_t{4}); // online
+    put(0xf4, std::uint32_t{4}); // on Steam (no EA logo beside the name)
+    put(0xc0, std::int32_t{-1}); // no party colour
+    put(0xdc, std::int32_t{-1}); // no voice
+    put(0x100, true);            // present
+    const bool published = n.publish(manager, made.handle, base + engine::player_info_type, info.data());
+    if (text) reinterpret_cast<void (*)(std::uintptr_t *)>(base + engine::native_text_release)(&text);
+    if (!published || !n.value(manager, made.handle, 0, 0)) {
+        made.handle = 0;
+        return 0;
     }
-    found.emplace(key, height);
-    if (!heights.empty() && std::abs(height - at[1]) > 0.02f)
-        say(std::format("Death Race: a flag set {:.2f} m {} the ground stands on it.", std::abs(at[1] - height),
-                        at[1] > height ? "above" : "below"));
-    return {at[0], height, at[2]};
-}
-NetworkObject prop(std::uint64_t id, const char *item, const Vec3 &at, float heading) {
-    NetworkObject o;
-    o.id = id;
-    o.item = item;
-    o.position = at;
-    const float half = heading * std::numbers::pi_v<float> / 360.0f;
-    o.rotation = {0.0f, std::sin(half), 0.0f, std::cos(half)}; // a turn about +Y
-    return o;
-}
-// What stands: the start line facing the first flag, a pair of slalom flags across each
-// checkpoint, the finish arch facing the way in. Ids stay with their flag as a race grows.
-std::vector<NetworkObject> props_for(const State &s) {
-    std::vector<NetworkObject> out;
-    std::vector<Vec3> points;
-    bool finished{};
-    float start_heading = s.draft_heading;
-    if (s.building) {
-        points = s.draft;
-    } else {
-        const int index = (s.phase != Phase::idle && s.active >= 0) ? s.active : s.selected;
-        const auto it = s.maps.find(s.level);
-        if (it == s.maps.end() || index < 0 || index >= static_cast<int>(it->second.size())) return out;
-        const auto &race = it->second[index];
-        points.push_back(race.start);
-        points.insert(points.end(), race.checkpoints.begin(), race.checkpoints.end());
-        points.push_back(race.finish);
-        finished = true;
-        start_heading = race.has_heading ? race.heading : facing(race.start, points[1], 0.0f);
-    }
-    if (points.empty()) return out;
-    // The start line faces the way the skater faced setting it.
-    out.push_back(prop(1, start_prop, grounded(s, points[0]), start_heading));
-    const std::size_t gates = finished ? points.size() - 1 : points.size();
-    for (std::size_t i = 1; i < gates; ++i) {
-        const float h = facing(points[i - 1], points[i], 0.0f);
-        const float r = h * std::numbers::pi_v<float> / 180.0f;
-        // Across the way in: the right of a rider heading `h` is (cos h, -sin h) in x, z.
-        const Vec3 side{std::cos(r) * gate_half_width, 0.0f, -std::sin(r) * gate_half_width};
-        const auto &p = points[i];
-        out.push_back(prop(10 + i * 2, checkpoint_prop, grounded(s, {p[0] + side[0], p[1], p[2] + side[2]}), h));
-        out.push_back(prop(11 + i * 2, checkpoint_prop, grounded(s, {p[0] - side[0], p[1], p[2] - side[2]}), h));
-    }
-    if (finished)
-        out.push_back(prop(2, finish_prop, grounded(s, points.back()), facing(points[points.size() - 2], points.back(), 0.0f)));
-    return out;
-}
-void update_props(State &s, double now) {
-    auto wanted = props_for(s);
-    // Every second as well: a world change clears them, and the handover puts them back.
-    if (wanted == s.props && now - s.props_at < 1.0) return;
-    s.props_at = now;
-    try {
-        set_race_props(wanted);
-        s.props_live = !wanted.empty() && race_props_live() > 0;
-    } catch (...) {
-        s.props_live = false;
-    }
-    s.props = std::move(wanted);
-}
-std::string without_error(const std::string &text) { return text.starts_with("error: ") ? text.substr(7) : text; }
-std::string command_here(std::string_view verb, const std::vector<std::string> &arguments = {});
-
-void handle_press(State &s, TileAction action, int race, double now) {
-    say(std::format("Death Race: tile pressed ({}).", action == TileAction::create ? "new race" : action == TileAction::finish ? "finish"
-                                                   : action == TileAction::open ? "open" : "busy"));
-    switch (action) {
-    case TileAction::create: {
-        const auto result = command_here("new");
-        tell(s, result.starts_with("error: ") ? without_error(result)
-                                              : "Start flag set. Ride to the finish, then press SET FINISH HERE in Throwdowns.");
-        break;
-    }
-    case TileAction::finish: {
-        const auto result = command_here("finish-here");
-        if (result.starts_with("error: ")) {
-            tell(s, without_error(result));
-            break;
-        }
-        const auto name = s.selected >= 0 && s.selected < static_cast<int>(races().size()) ? races()[s.selected].name : std::string("The race");
-        command_here("go");
-        // Back on the start: not straight into a race of your own.
-        s.armed_away = false;
-        s.no_arm_until = now + 3.0;
-        tell(s, name + " saved. You are on its start: press DEATH RACE in Throwdowns to open it to rivals.");
-        break;
-    }
-    case TileAction::open: {
-        if (race < 0 || race >= static_cast<int>(races().size())) {
-            tell(s, "Ride to a race's start flag first.");
-            break;
-        }
-        if (races()[race].from) {
-            tell(s, races()[race].name + ": join it at its flag to race.");
-            break;
-        }
-        s.carrier = {};
-        s.carrier.race = race;
-        s.carrier.since = now;
-        s.selected = race;
-        tell(s, std::format("Opening {}: set it up, then start it from its flag. Rivals join there.", races()[race].name));
-        break;
-    }
-    case TileAction::busy:
-        if (s.carrier.created) tell(s, "Your race flag is up: start the race from it.");
-        break;
-    }
-}
-void put_back_queue_timer(State &s) {
-    if (!s.queue_timer_before) return;
-    say("Death Race: queue countdown back: " + change_named_setting(queue_timer_setting, *s.queue_timer_before, false));
-    s.queue_timer_before.reset();
-    multiplayer::throwdown_relay_queue_timer_changed();
-}
-void handle_event(State &s, Throwdown what, const std::string &series, std::uint32_t mmid, double now) {
-    static const char *names[] = {"created", "configured", "cancelled", "started", "entered", "ended"};
-    say(std::format("Death Race: throwdown {} (series {}, MMID {:#x}){}.", names[static_cast<int>(what)], series.empty() ? "-" : series,
-                    mmid, s.carrier.race >= 0 ? std::format("; race {} opened", s.carrier.race + 1) : ""));
-    const bool opened = s.carrier.race >= 0 && s.carrier.race < static_cast<int>(races().size());
-    switch (what) {
-    case Throwdown::created: {
-        // The game's placement for the race the tile opened (it carries the race as a Skate Jam).
-        if (series != "JamSession" || s.carrier.created) break;
-        int race = -1;
-        if (opened && now - s.carrier.since <= carrier_wait) race = s.carrier.race;
-        else if (s.focus_race >= 0 && now - s.focus_at <= focus_wait) race = s.focus_race;
-        if (race < 0 || race >= static_cast<int>(races().size())) break;
-        s.carrier = {};
-        s.carrier.race = race;
-        s.carrier.since = now;
-        s.carrier.created = true;
-        s.selected = race;
-        s.focus_race = -1;
-        tell(s, std::format("Opening {}: set it up, then start it from its flag. Rivals join there.", races()[race].name));
-        break;
-    }
-    case Throwdown::configured:
-        if (!opened || !s.carrier.created) break;
-        s.carrier.configured = true;
-        s.carrier.mmid = mmid;
-        s.carrier.riders = riders_for(s);
-        if (s.carrier.riders < s.riders)
-            tell(s, std::format("With other players around, room stays for them: {} AI rider(s).", s.carrier.riders));
-        s.riding = s.lines[s.level + "/" + races()[s.carrier.race].name];
-        if (s.riders > 0 && !s.riding) tell(s, "No AI line for this race yet: ride it once and its AI riders will follow you.");
-        say(std::format("Death Race: {} opened with {} AI rider(s) (MMID {:#x}).", races()[s.carrier.race].name, s.riders, mmid));
-        tell(s, "Race flag up: rivals join at it. Start the race from the flag.");
-        break;
-    case Throwdown::cancelled:
-        if (!s.carrier.created) break;
-        s.carrier = {};
-        tell(s, "Race flag taken down.");
-        break;
-    case Throwdown::started:
-        break;
-    case Throwdown::entered:
-        // The throwdown started: so does the race, for everyone at the flag.
-        if (!opened || !s.carrier.created) break;
-        begin_carried(s, now);
-        break;
-    case Throwdown::ended:
-        if (!s.carrier.created) break;
-        if (s.carried && (s.phase == Phase::countdown || s.phase == Phase::racing || s.phase == Phase::finished)) {
-            // Over: run to the finish, or the time ran out. The game shows its results.
-            const int done = s.active;
-            s.dress_until = seconds() + dressed_after; // the race's text through the game's results
-            if (s.phase == Phase::racing) tell(s, "Time's up!");
-            if (s.phase != Phase::finished) stop(s, "the throwdown ended");
-            s.phase = Phase::idle;
-            s.active = -1;
-            s.carried = false;
-            s.riders_go_at = 0;
-            s.scores.clear();
-            s.ending = false;
-            s.all_in_at = 0;
-            s.linked = false;
-            s.link.reset();
-            s.carrier = {};
-            forget(s, done);
-            break;
-        }
-        s.carrier = {};
-        s.carried = false;
-        s.riders_go_at = 0;
-        s.linked = false;
-        s.link.reset();
-        break;
-    }
-}
-void drain(State &s, double now) {
-    std::optional<std::pair<TileAction, int>> pressed;
-    std::optional<int> focused;
-    std::vector<std::tuple<Throwdown, std::string, std::uint32_t>> events;
-    {
-        auto &in = inbox();
-        std::lock_guard lock(in.mutex);
-        pressed.swap(in.pressed);
-        focused.swap(in.focused);
-        events.swap(in.events);
-    }
-    if (focused) {
-        s.focus_race = *focused;
-        s.focus_at = now;
-    }
-    for (const auto &[what, series, mmid] : events) handle_event(s, what, series, mmid, now);
-    if (pressed) handle_press(s, pressed->first, pressed->second, now);
-    // The tile was pressed but the game's throwdown never came: the host backed out.
-    if (s.carrier.race >= 0 && !s.carrier.created && now - s.carrier.since > carrier_wait) s.carrier = {};
-    // Other players joined the race's queue: its AI riders step aside (back if they all leave).
-    auto &c = s.carrier;
-    if (c.configured && !s.carried) {
-        const bool joined = multiplayer::throwdown_relay_hosted_joiners() > 0;
-        if (joined && (c.riders > 0 || c.riders_in > 0)) {
-            for (int i = 0; i < c.riders_in; ++i) multiplayer::queue_throwdown_remove(rider_base + 1 + static_cast<std::uint32_t>(i));
-            if (c.riders_in) tell(s, "A rival joined: the AI riders step aside.");
-            say(std::format("Death Race: another player joined; {} AI rider(s) left the queue.", c.riders_in));
-            c.riders = 0;
-            c.riders_in = 0;
-            c.riders_off = true;
-        } else if (!joined && c.riders_off) {
-            c.riders_off = false;
-            c.riders = riders_for(s);
-        }
-    }
-    // The race's flag is up: its AI riders join its queue, as players, so it can start.
-    if (c.configured && c.mmid && c.riders_in < c.riders && multiplayer::prepare_throwdown_injection()) {
-        const int before = c.riders_in;
-        if (!before) {
-            // Their names this race: drawn apart from each other.
-            std::vector<const char *> pool(rider_names.begin(), rider_names.end());
-            static std::mt19937 draw{std::random_device{}()};
-            std::shuffle(pool.begin(), pool.end(), draw);
-            for (std::size_t i = 0; i < s.names.size(); ++i) s.names[i] = pool[i];
-            for (auto &record : rider_records) record.store(0, std::memory_order_release);
-        }
-        while (c.riders_in < c.riders && multiplayer::add_throwdown_rider(rider_base + 1 + c.riders_in, "JamSession", c.mmid)) ++c.riders_in;
-        if (c.riders_in > before) say(std::format("Death Race: {} AI rider(s) joined the race's queue.", c.riders_in));
-    }
-}
-
-std::optional<int> index_of(const std::vector<std::string> &arguments) {
-    if (arguments.empty()) return std::nullopt;
-    int value{};
-    const auto &text = arguments[0];
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || value < 1) return std::nullopt;
-    return value - 1;
+    made.name = name;
+    return made.handle;
 }
 } // namespace
+} // namespace dingosdk::death_race::detail
+
+namespace dingosdk::death_race {
+using namespace detail;
 
 Status status() noexcept {
     auto &s = state();
@@ -1505,120 +682,4 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
     }
 }
 
-namespace {
-std::string command_here(std::string_view verb, const std::vector<std::string> &arguments) { return command(verb, arguments); }
-} // namespace
-
-std::string command(std::string_view verb, const std::vector<std::string> &arguments) {
-    auto &s = state();
-    load(s);
-    auto &list = races();
-    const auto need_skater = [&]() -> std::string {
-        if (s.level.empty() || !s.skater) return "error: no skater in play.";
-        return {};
-    };
-    if (verb == "status" || verb == "list") {
-        std::string text = std::format("Death Race: {} race(s) on this map{}.", list.size(),
-                                       s.building ? std::format("; building one ({} point(s) set)", s.draft.size()) : "");
-        for (std::size_t i = 0; i < list.size(); ++i)
-            text += std::format("\n  {}. {} - {} checkpoint(s), best {}{}", i + 1, list[i].name, list[i].checkpoints.size(),
-                                list[i].best > 0 ? clock_text(list[i].best) : std::string("none"), list[i].from ? " (another player's)" : "");
-        return text;
-    }
-    if (verb == "new" || verb == "start-here") {
-        if (auto e = need_skater(); !e.empty()) return e;
-        if (s.phase == Phase::countdown || s.phase == Phase::racing) return "error: finish or abort the race first.";
-        s.building = true;
-        s.draft = {s.position};
-        s.draft_heading = s.heading;
-        // The ride to the finish is the race's first AI line.
-        line_start(seconds());
-        s.recording = State::Recording::route;
-        return "Start flag set. Add checkpoints if you like, then ride to the finish and set it.";
-    }
-    if (verb == "checkpoint") {
-        if (auto e = need_skater(); !e.empty()) return e;
-        if (!s.building || s.draft.empty()) return "error: set a start first.";
-        if (s.draft.size() > 32) return "error: 32 checkpoints at most.";
-        if (across(s.position, s.draft.back()) < flag_radius * 2) return "error: too close to the last flag.";
-        s.draft.push_back(s.position);
-        return std::format("Checkpoint {} set.", s.draft.size() - 1);
-    }
-    if (verb == "finish-here") {
-        if (auto e = need_skater(); !e.empty()) return e;
-        if (!s.building || s.draft.empty()) return "error: set a start first.";
-        if (across(s.position, s.draft.back()) < flag_radius * 2) return "error: too close to the last flag.";
-        Race race;
-        race.name = next_name(list);
-        race.start = s.draft.front();
-        race.checkpoints.assign(s.draft.begin() + 1, s.draft.end());
-        race.finish = s.position;
-        race.heading = s.draft_heading;
-        race.has_heading = true;
-        s.selected = add_race(s, std::move(race));
-        s.building = false;
-        s.draft.clear();
-        s.armed_away = false; // not straight away, if the finish is near a start
-        if (s.recording == State::Recording::route) {
-            s.recording = State::Recording::none;
-            if (auto line = line_stop()) s.lines[s.level + "/" + list[s.selected].name] = std::move(line);
-        }
-        save(s);
-        return std::format("{} saved. Stop on its start flag to race it.", list[s.selected].name);
-    }
-    if (verb == "cancel") {
-        s.building = false;
-        s.draft.clear();
-        if (s.recording == State::Recording::route) {
-            line_stop();
-            s.recording = State::Recording::none;
-        }
-        return "New race cancelled.";
-    }
-    if (verb == "solo") {
-        const auto choice = arguments.empty() ? std::string("status") : arguments[0];
-        if (choice == "on" || choice == "off") s.solo_on_stop = choice == "on";
-        return std::string("Racing alone by stopping on the start line: ") + (s.solo_on_stop ? "on." : "off.");
-    }
-    if (verb == "hide") {
-        if (s.phase == Phase::countdown || s.phase == Phase::racing) return "error: finish or abort the race first.";
-        s.selected = -1;
-        return "Race props put away.";
-    }
-    if (verb == "select") {
-        const auto i = index_of(arguments);
-        if (!i || *i >= static_cast<int>(list.size())) return "error: no such race.";
-        s.selected = *i;
-        return std::format("{} selected.", list[*i].name);
-    }
-    if (verb == "go") {
-        if (auto e = need_skater(); !e.empty()) return e;
-        const auto i = arguments.empty() ? std::optional<int>(s.selected) : index_of(arguments);
-        if (!i || *i < 0 || *i >= static_cast<int>(list.size())) return "error: no such race.";
-        if (s.phase == Phase::countdown || s.phase == Phase::racing) stop(s, "restarted");
-        s.selected = *i;
-        s.armed_away = true;
-        const auto &start = list[*i].start;
-        // The trainer's teleport keeps a session's teleport rules.
-        return trainer::command("tp", {std::format("{:.2f}", start[0]), std::format("{:.2f}", start[1] + 0.5f), std::format("{:.2f}", start[2])});
-    }
-    if (verb == "delete") {
-        const auto i = arguments.empty() ? std::optional<int>(s.selected) : index_of(arguments);
-        if (!i || *i < 0 || *i >= static_cast<int>(list.size())) return "error: no such race.";
-        if (list[*i].from) return "error: that race is another player's.";
-        if (s.active == *i) stop(s, "deleted");
-        const auto name = list[*i].name;
-        list.erase(list.begin() + *i);
-        s.selected = -1;
-        if (s.active > *i) --s.active;
-        save(s);
-        return name + " deleted.";
-    }
-    if (verb == "abort") {
-        if (s.phase != Phase::countdown && s.phase != Phase::racing) return "No race in progress.";
-        stop(s, "aborted");
-        return "Race aborted.";
-    }
-    return "error: unknown command.";
-}
 } // namespace dingosdk::death_race

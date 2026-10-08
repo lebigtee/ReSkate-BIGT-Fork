@@ -82,11 +82,22 @@ guest's log.
 | File | What it does |
 |---|---|
 | `death_race.h` | The public side: races, the HUD's snapshot, the tile, the throwdown events |
-| `death_race.cpp` | Game thread: races and their file, the race's state machine, props, scores, the end, races with other players, the `race` commands |
-| `death_race_riders.h`, `.cpp` | The AI riders: lines, the riding library, the riders' simulation and poses |
+| `death_race_internal.h` | The race's state and constants, shared by its files |
+| `death_race.cpp` | Game thread: the races file, the race's state machine, a bail's respawn, the tick |
+| `death_race_throwdown.cpp` | The game's throwdown that carries a race: the tile's press, its events, the AI riders in its queue, scores, the end |
+| `death_race_link.cpp` | Races with other players (through the throwdown relay) |
+| `death_race_props.cpp` | The flags standing in the world (the game's build-kit props) |
+| `death_race_commands.cpp` | The `race` commands |
+| `death_race_format.h`, `.cpp` | The races as data, nothing of the game: the races file, a race offered to the other players, the start line's lanes |
+| `death_race_riders.h` | The AI riders' public side |
+| `death_race_riders_internal.h` | Their constants and types, shared by their files |
+| `death_race_line.cpp` | The line: the skater's ride recorded, its poses, the course shaped from it |
+| `death_race_library.cpp` | The riding library and the last fall, kept on disk |
+| `death_race_sight.cpp` | What the riders see: the game's rays ahead, the ground under them |
+| `death_race_riders.cpp` | The riders shown as the game's skaters, dressed, run into, and moved every tick |
 | `death_race_limits.h` | How many race together, and their spacing on the start line |
 | `death_race_hud.cpp`, `death_race_view.cpp` | The overlay: flags, arrow, clock, result (overlay library) |
-| `death_race_commands.cpp` | Registers the `race` commands |
+| `Test/death_race_tests.cpp` | The races file, offered races and lanes, checked without the game (CMake option `DINGOSDK_BUILD_FORK_TESTS`) |
 
 Outside this folder, the race reaches the game through:
 
@@ -110,7 +121,7 @@ library), `fall.bin` (your last fall, which a floored rider plays).
 
 ## Tuning
 
-Every number is a named constant at the top of `death_race.cpp` and `death_race_riders.cpp`, with
+Every number is a named constant in `death_race_internal.h` and `death_race_riders_internal.h`, with
 what it does beside it: the riders' paces and speed swings, how far they wander, the run-in
 thresholds (`hit_speed`, `crash_speed`), the respawn after a bail (`respawn_after`,
 `respawn_back`), the points a place (`points_a_place`).

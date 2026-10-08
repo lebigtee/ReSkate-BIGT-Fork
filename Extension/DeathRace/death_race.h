@@ -137,7 +137,7 @@ float zone_reach(const std::array<float, 3> &from) noexcept;
 // The race being opened or run as a Skate Jam: the game's Jam text reads as the Death Race's
 // (Extension/Throwdowns), from the cursor on its tile until its throwdown ends.
 bool dressed() noexcept;
-// Its host is on the throwdown's setup page: the Jam's own settings are taken out of it.
+// The race's host is on its throwdown's setup page: the Jam's own settings are taken out of it.
 bool setting_up() noexcept;
 // A race of a throwdown is on: counting down, racing, or finished and waiting for the others.
 bool race_on() noexcept;

@@ -119,7 +119,14 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_session.cpp
     Extension/HallOfMeat/hall_of_meat.cpp
     Extension/DeathRace/death_race.cpp
+    Extension/DeathRace/death_race_format.cpp
+    Extension/DeathRace/death_race_link.cpp
+    Extension/DeathRace/death_race_props.cpp
+    Extension/DeathRace/death_race_throwdown.cpp
     Extension/DeathRace/death_race_riders.cpp
+    Extension/DeathRace/death_race_line.cpp
+    Extension/DeathRace/death_race_library.cpp
+    Extension/DeathRace/death_race_sight.cpp
     Extension/DeathRace/death_race_commands.cpp
     Extension/CameraLight/camera_light.cpp
     Extension/CameraLight/camera_light_commands.cpp
