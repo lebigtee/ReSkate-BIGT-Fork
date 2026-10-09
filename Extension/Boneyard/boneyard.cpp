@@ -69,6 +69,15 @@ constexpr float slam_lean = 0.5f;
 // ...and, when the game's contacts can be read, a part of the body other than the feet met a
 // surface at least this fast (metres per second).
 constexpr float slam_body_contact = 3.0f;
+// A body still in the air is no slam: its hips dropping faster than this (metres per second)...
+constexpr float still_falling = 4.0f;
+// ...or gaining this much downward speed in a tenth of a second (6 m/s², gravity's 9.8 with room
+// to spare): flying, up or down.
+constexpr float free_fall_gain = 0.6f;
+// A slam is sure at once when the hips came down at least this fast (metres per second) just
+// before it: a landing. Any other waits this long (seconds) to see the body stay down.
+constexpr float landing_speed = 3.0f;
+constexpr double slam_confirm = 0.3;
 
 struct Settings {
     bool enabled{true};
@@ -137,6 +146,7 @@ struct State {
     // The skeleton this tick and the last half second of it.
     bool pose{};
     std::array<Vec3, point_count> points{};
+    std::array<Vec3, point_count> previous_points{}; // the tick before's
     Vec3 root{};
     float scale{1};
     std::deque<Sample> samples;
@@ -146,6 +156,8 @@ struct State {
     Phase phase{};
     std::uint64_t serial{};
     double started{}, next_bail{}, demo_until{};
+    double next_air_note{}; // the log's note of a slam-like hit in the air, at most once a second
+    double slam_since{};    // a slam waiting to be sure the body stays down (0: none)
     double on_board_until{}; // the feet count as on the board until then
     std::array<float, bone_count> peaks{};
     float hips_peak{}, speed{}, top{}, bottom{}, drop{};
@@ -454,6 +466,7 @@ void start_bail(State &s, double now, const char *why) {
     s.phase = Phase::bailing;
     ++s.serial;
     s.started = now;
+    s.slam_since = 0;
     s.started_real = seconds();
     s.peaks = {};
     s.hips_peak = s.speed = 0;
@@ -528,6 +541,23 @@ std::uint64_t observe_watch(State &s, double now) {
     s.seen_wipeouts = watch.wipeouts;
     return fresh;
 }
+// The hips' rise over the `span` seconds before `end` (metres per second, below 0 falling), from
+// the samples; nothing when they do not reach that far.
+std::optional<float> hips_rise(const State &s, double end, double span) {
+    const auto *b = at_or_before(s, end);
+    const auto *a = b ? at_or_before(s, end - span) : nullptr;
+    if (!a || !b || b->time - a->time < span * 0.5) return std::nullopt;
+    return static_cast<float>((b->points[hips][1] - a->points[hips][1]) / (b->time - a->time));
+}
+// A body in the air: its hips still dropping fast, or dropping and gaining speed as gravity makes
+// a falling body gain it. Lying, sliding or stopped where it hit, neither.
+bool airborne(const State &s, double now, float &falling) {
+    const auto recent = hips_rise(s, now, 0.1), earlier = hips_rise(s, now - 0.1, 0.1);
+    falling = recent ? std::max(0.0f, -*recent) : 0.0f;
+    if (!recent) return false;
+    if (*recent < -still_falling) return true;
+    return earlier && *recent - *earlier < -free_fall_gain;
+}
 // Why a bail starts this tick, or nothing.
 const char *bail_trigger(State &s, std::uint64_t fresh_wipeouts, double now) {
     if (fresh_wipeouts) return "wipeout";
@@ -541,12 +571,36 @@ const char *bail_trigger(State &s, std::uint64_t fresh_wipeouts, double now) {
             if (k != 17 && k != 18) body = std::max(body, impact.bones[k]); // not the ankles: the feet land
     }
     const auto torso = minus(s.points[spine3], s.points[hips]);
-    if (hardest < slam_hips_loss || torso[1] >= slam_lean * length(torso)) return nullptr;
     // ...but not a skater still on the board, nor a deep landing on the feet: with the game's
     // contacts, some part of the body other than the feet must have hit something (a drop landed
     // folded double looks like a slam to the skeleton, and touches nothing).
-    if (s.watch_valid && riding(s.physics_state)) return nullptr;
-    if (s.contacts_valid && body < slam_body_contact) return nullptr;
+    const bool slam_like = hardest >= slam_hips_loss && torso[1] < slam_lean * length(torso) &&
+                           !(s.watch_valid && riding(s.physics_state)) && !(s.contacts_valid && body < slam_body_contact);
+    // ...nor a body in the air. Leaving the board into a dive (a spread eagle) looks like a slam to
+    // the skeleton as the skater goes: the bail is the landing, once the fall has stopped.
+    float falling{};
+    const bool in_air = airborne(s, now, falling);
+    if (!slam_like || in_air) {
+        if (slam_like && now >= s.next_air_note) {
+            s.next_air_note = now + 1.0;
+            say(logging::Level::info, std::format("Boneyard: a slam-like hit in the air (hips lost {:.1f} m/s, falling at {:.1f} m/s{}); "
+                                                  "no bail before the fall stops.",
+                                                  hardest, falling, s.slam_since ? ", after leaving the ground" : ""));
+        }
+        s.slam_since = 0;
+        return nullptr;
+    }
+    // A landing (the hips came down fast just before, and have stopped) is a slam at once; any
+    // other waits a moment to see the body stay down rather than fly off into a dive.
+    const auto came = hips_rise(s, now - 0.1, 0.15);
+    const bool landing = came && *came < -landing_speed;
+    if (!landing) {
+        if (!s.slam_since) s.slam_since = now;
+        if (now - s.slam_since < slam_confirm) return nullptr;
+    }
+    s.slam_since = 0;
+    say(logging::Level::info, std::format("Boneyard: slam ({}): hips lost {:.1f} m/s, hardest body contact {:.1f} m/s{}.",
+                                          landing ? "a landing" : "stayed down", hardest, body, s.contacts_valid ? "" : " (skeleton)"));
     return "slam";
 }
 
@@ -749,6 +803,7 @@ void publish_view(State &s) {
     v.hidden = multiplayer::sample_game_ui_state(s.base).in_menu;
     v.pose = s.pose;
     v.points = s.points;
+    v.previous_points = s.previous_points;
     v.scale = s.scale;
     v.severity = severities(s);
     v.impact = s.peaks;
@@ -763,7 +818,12 @@ void publish_view(State &s) {
     v.stutter = s.settings.stutter && s.phase == Phase::bailing && seconds() - s.started_real < stutter_for;
     // Where the game's speed must stay (a multiplayer session), the overlay replays the bail slowly.
     v.replay = s.settings.enabled && s.settings.slowmo && multiplayer_session_active() && !death_race::racing();
-    if (const auto camera = latest_game_view()) v.camera = *camera;
+    if (const auto camera = latest_game_view()) {
+        v.camera = *camera;
+        // As the overlay reads it (the camera object's own matrix), so it can tell whether the
+        // game has moved the camera since this tick.
+        (void)read_live_camera(v.camera);
+    }
     v.published = Clock::now();
     v.results_until = s.results_until;
     publish(v);
@@ -788,10 +848,14 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing) noexcept {
         }
         const double now = game_time(s);
         bool skater = false;
+        const auto before = s.points;
+        const bool had_pose = s.pose;
         if (s.settings.enabled && playing && resolve(s, now)) {
             skater = read_pose(s);
             if (!skater) s.component = 0; // looked up again at the next resolve
         }
+        // The skeleton of the tick before, for the overlay to pair with the camera of its moment.
+        s.previous_points = skater && had_pose ? before : s.points;
         if (!skater) {
             s.samples.clear();
             s.impacts.clear();

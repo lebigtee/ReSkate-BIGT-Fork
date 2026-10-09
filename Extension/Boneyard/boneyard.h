@@ -90,6 +90,10 @@ struct View {
     bool hidden{};          // a game menu is up
     bool pose{};            // `points` hold this tick's skeleton
     std::array<Vec3, point_count> points{};
+    // The skeleton of the tick before. Each frame the game moves the skeleton, then runs the client
+    // tick (which reads it and the camera), then moves the camera: until the camera has moved, the
+    // camera the overlay sees is the frame before's, which goes with these points.
+    std::array<Vec3, point_count> previous_points{};
     float scale{1};         // the skater's size, for the skull
     std::array<Severity, bone_count> severity{};
     std::array<float, bone_count> impact{}; // the peak per bone, metres per second
@@ -97,7 +101,7 @@ struct View {
     float drop{};           // how far the skater fell, metres (0: not a fall)
     bool stutter{};         // the bail's first moments: the overlay shows the picture in jerks
     bool replay{};          // in a multiplayer session: the slow motion is the overlay's replay
-    GameView camera;        // the client's camera this tick
+    GameView camera;        // the client's camera this tick, as the camera object holds it
     std::chrono::steady_clock::time_point published, results_until;
 };
 // Thread-safe snapshot (boneyard_view.cpp, part of the overlay).
@@ -108,6 +112,12 @@ void publish(const View &) noexcept;
 using LiveCamera = bool (*)(GameView &) noexcept;
 void set_live_camera(LiveCamera) noexcept;
 bool live_camera(GameView &) noexcept;
+// The camera read again now, with the skeleton of its own moment: the tick's (`points`) once the
+// game has moved the camera since the tick, the tick before's (`previous_points`) until then. Drawn
+// with a camera of one frame and a skeleton of another, a skater moving fast was a frame's travel
+// from the bones laid over it, more or less each frame as the overlay drew earlier or later: they
+// shook. False (the view as it was) when the camera cannot be read.
+bool live_view(View &) noexcept;
 
 // Game thread (boneyard.cpp).
 // Each client tick; `playing` while a local skater can exist.

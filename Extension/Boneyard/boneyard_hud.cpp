@@ -771,7 +771,7 @@ const Replay::Kept *plan_replay(Hold &h, const yard::View &view, double now) {
             auto &slot = r.slots[k];
             if (slot.id && slot.moment >= r.on_screen) continue;
             slot = {++r.ids, t, view};
-            (void)yard::live_camera(slot.view.camera);
+            (void)yard::live_view(slot.view);
             plan.keep_slot = static_cast<int>(k);
             plan.keep_id = slot.id;
             r.last_kept = t;
@@ -868,11 +868,12 @@ void draw_hud() {
         project.centre = ImVec2(display.x * 0.5f, display.y * 0.5f);
         draw_xray(draw, shown, project, now, fade);
     };
-    // Held, the skeleton as it was in the kept picture; otherwise now, at the camera's latest.
+    // Held, the skeleton as it was in the kept picture; otherwise now: the camera read again, with
+    // the skeleton of its own moment, so the bones stay on a skater moving fast.
     const bool held = h.frame.action == FrameHold::Action::show && h.view.serial == view.serial;
     if (!held) {
         h.view = view;
-        (void)yard::live_camera(h.view.camera);
+        (void)yard::live_view(h.view);
     }
     if (view.xray && view.pose) {
         // Replayed, the skeleton of the picture on screen, fading into the live one with it.

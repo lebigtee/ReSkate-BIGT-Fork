@@ -31,4 +31,11 @@ bool live_camera(GameView &view) noexcept {
     const auto reader = feed().camera.load(std::memory_order_acquire);
     return reader && reader(view);
 }
+bool live_view(View &view) noexcept {
+    auto camera = view.camera;
+    if (!live_camera(camera)) return false;
+    if (camera.world == view.camera.world) view.points = view.previous_points;
+    view.camera = camera;
+    return true;
+}
 } // namespace dingosdk::boneyard

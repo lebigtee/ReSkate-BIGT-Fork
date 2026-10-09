@@ -80,6 +80,12 @@ feature's first name are read from there until the first change saves them here.
 - **A confirmed slam**: with the game's contacts, a slam seen on the skeleton only counts if a body
   part other than the feet hit something at 3 m/s or more, and never while the skater is still on
   its board. A landing on the feet, even folded in two, is no bail.
+- **Dives are no slams**: leaving the board into a dive (a spread eagle) looks like a slam to the
+  skeleton as the skater goes. A body in the air (its hips dropping faster than 4 m/s, or gaining
+  downward speed like a falling body, 6 m/s² or more over a tenth of a second) never starts a bail.
+  A landing (the hips came down at 3 m/s or more just before the hit, and have stopped) is a slam
+  at once; any other slam waits 0.3 s for the body to stay down, and a dive flies off meanwhile.
+  The log says each time which it was.
 - **Feet on the board** (skeleton estimate only): while the skater is on its board (and 0.15 s
   after), hits to the shins and ankles do not count.
 - **Severity**: impact × the bone's fragility (`bones` in `boneyard.h`) × sensitivity,
@@ -136,6 +142,12 @@ feature's first name are read from there until the first change saves them here.
   or JOHN DOE). A strip of `assets/panel.png`, the collage of X-rays drawn for the mod (cropped by
   `build_assets.ps1`), heads it; without the picture the panel goes without the strip. Grain, faint
   scan lines and a border worn through in places, the same for a whole bail, keep it rough.
+- **The skeleton and the camera of one moment**: each frame the game moves the skeleton, then runs
+  the client tick (which reads it), then moves the camera, while the overlay draws at a moment of
+  its own. The overlay reads the camera again as it draws: while it is still the one the tick saw,
+  it draws the skeleton of the tick before (`previous_points`), once the game has moved it, the
+  tick's (`boneyard::live_view`). Drawn with a camera of one frame and a skeleton of another, the
+  bones shook over a skater moving fast, by a frame's travel.
 - **Round bones and the glow**: each bone's sprite is cut lengthwise into strips, shaded from
   dark at its edges to light a little off its middle; under all of them, the glow is three soft
   layers wider than each bone, blue-white, or the colour of its break.
