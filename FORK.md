@@ -37,7 +37,8 @@ official builds ignore without a word). In a session with real players, AI rider
     commit;
   - `Extension/UI/NativeMenu/` (`native_throwdown_tile.cpp` is the fork's; `native_menu.cpp`,
     `native_tools_view.h`, `native_menu_rows.cpp`): the PLAYER page's rows and the Death Race
-    tile and setup page;
+    tile and setup page, and in `native_menu.cpp` the pause menu put back on its tab when the
+    game's tab stack takes a press of a ReSkate button for a tab move too;
   - `Extension/Throwdowns/`: the throwdown relay's races, the lab's AI riders and setup values;
   - `Extension/Skater/no_bail.cpp`, `client_noclip.cpp`: a hard run-in's native bail, the d-pad
     teleport refused during a race, a run-in's push;

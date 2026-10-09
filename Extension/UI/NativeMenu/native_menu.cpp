@@ -31,6 +31,11 @@ RemovedStore removed_store;
 // When insert() last left a copy of that Store item last in the menu (0: not there); trim_store drops it.
 std::uint64_t store_last_since{};
 thread_local State* current_state{};
+// When one of ReSkate's buttons was last pressed (GetTickCount64). Now and then the game's tab
+// stack takes that same press (a controller's confirm) as a move to the tab before: the tab that
+// changes with a press of ours is put back (restore_last_tab).
+std::atomic<std::uint64_t> last_press{};
+constexpr std::uint64_t press_window_ms = 250;
 std::uint32_t menu_key() { return our_key + state().slot * 0x100; }
 std::mutex callbacks_mutex;
 overlay::CallbacksV3 tools_callbacks{};
@@ -44,6 +49,7 @@ void status(std::string message) {
 }
 template<unsigned Slot, std::size_t Index> void activate() noexcept {
     if (lifetime.blocked()) return;
+    last_press.store(GetTickCount64(), std::memory_order_relaxed);
     auto& s = page_state(Slot);
     if (Index >= s.action_count.load(std::memory_order_acquire)) return;
     try {
@@ -272,6 +278,15 @@ void restore_last_tab(const Context& context, Value menu) {
             }
     }
     if (selected == previous) return;
+    // Left one of ReSkate's tabs with the press of one of its buttons: the game's stack took the
+    // press for a tab move too. Back to the tab the button was on.
+    if (previous >= 0 && owned(key_at(previous)) && GetTickCount64() - last_press.load(std::memory_order_relaxed) <= press_window_ms) {
+        context.set(target, previous);
+        context.set(context.path(menu, {content, 0x55511280}), previous);
+        logging::printf(logging::Level::info, logging::Channel::ui,
+                        "Pause menu: tab %d -> %d with a press of a ReSkate button; back on tab %d.", previous, selected, previous);
+        return;
+    }
     previous = selected;
     if (selected >= 0) remembered = owned(key_at(selected)) ? key_at(selected) : 0;
 }
@@ -356,6 +371,7 @@ void insert(const Context& context) {
         store_last_since = GetTickCount64();
     }
     context.array(list, values, count);
+    logging::printf(logging::Level::info, logging::Channel::ui, "Pause menu: ReSkate's tabs put back (%zu missing).", missing.size());
     // The menu was reopened (our tabs had gone): refresh every page's Back.
     for (unsigned slot = 0; slot < page_count; ++slot) {
         auto& page_owner = page_state(slot);
@@ -582,6 +598,9 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
                 s.tools_callbacks.read_model(s.tools_callbacks.user, s.tools_model);
             if (!requests.empty()) refresh_boneyard(s);
             for (const auto& request : requests) if (request.generation == s.generation.load()) {
+                if (logging::enabled(logging::Level::debug))
+                    logging::log(logging::Level::debug, logging::Channel::ui, "Custom Stuff: {}{}{}.", request.command,
+                                 request.argument.empty() ? "" : " ", request.argument);
                 // The card name field can only be read under the model lock below.
                 if (request.command == "card-name" || request.command == "card-name-reset") card_request = request.command;
                 else native_tools::activate(s.tools, s.tools_model, s.tools_callbacks, request.command, request.argument);
