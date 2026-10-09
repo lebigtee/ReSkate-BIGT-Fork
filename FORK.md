@@ -1,14 +1,14 @@
-# The Boneyard fork of ReSkate
+# BigT's Megafork of ReSkate
 
-This fork adds three things to [ReSkate](https://github.com/Dingo-Shenanigans/ReSkate) and changes
-nothing else:
+A fork of [ReSkate](https://github.com/Dingo-Shenanigans/ReSkate) that keeps adding what players
+ask for, and changes nothing else. So far:
 
 - **[Boneyard](Extension/Boneyard/README.md)**: skate 3's bail mini-game. Bail, and see
   which bones you broke on an X-ray, with the slow motion and the jerky picture of the original.
 - **[Death Race](Extension/DeathRace/README.md)**: downhill races you make yourself, raced against
   AI riders, or against other players who run this fork.
 - **[Camera light](Extension/CameraLight/README.md)**: a filmer's lamp on the camera at night,
-  one of the game's own lights.
+  one of the game's own lights, as bright and in the colour you like.
 
 Everything works on a controller. Each is switched from the pause menu's **CUSTOM STUFF › PLAYER**
 (and the Death Race from **Throwdowns**), or from the console (`boneyard`, `race`, `light`).
@@ -31,7 +31,10 @@ official builds ignore without a word). In a session with real players, AI rider
   - `Runtime/client_tick.cpp`, `Runtime/runtime_init.cpp`: the fork's per-tick calls and the
     session marker guard;
   - `Extension/UI/Overlay/overlay_render.cpp`: the Boneyard's and the Death Race's drawing
-    calls (a dozen lines; the GPU work is `Extension/Boneyard/boneyard_picture.cpp`);
+    calls (a dozen lines; the GPU work is `Extension/Boneyard/boneyard_picture.cpp`), and
+    `fit_to_picture`, which scales the whole overlay to a game picture smaller than its window
+    (with `picture_stretch` in `overlay_internal.h`): a fix of ReSkate's own, kept apart in its
+    commit;
   - `Extension/UI/NativeMenu/` (`native_throwdown_tile.cpp` is the fork's; `native_menu.cpp`,
     `native_tools_view.h`, `native_menu_rows.cpp`): the PLAYER page's rows and the Death Race
     tile and setup page;
@@ -99,7 +102,7 @@ beside them (`death_race_internal.h`, `death_race_riders_internal.h`, `camera_li
 
 ReSkate is free software under the GNU General Public License v3 (`LICENSE`), and so is this fork:
 it is a modified version of ReSkate, changed from October 2026 on (its changes and their dates are
-its git history, on the `boneyard` branch). Whoever shares its build shares its source with
+its git history, on the `megafork` branch). Whoever shares its build shares its source with
 it, under the same license.
 
 ## Assets

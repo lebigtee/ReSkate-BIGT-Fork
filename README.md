@@ -1,8 +1,9 @@
 # ReSkate
 
-> **This is the Boneyard fork of ReSkate**, on the `boneyard` branch. It adds the Boneyard
-> from skate 3, Death Races against AI riders or other fork players, and a camera light for night
-> clips, and still plays with official ReSkate players. See [FORK.md](FORK.md).
+> **This is BigT's Megafork of ReSkate**, on the `megafork` branch: a fork that keeps adding what
+> players ask for. So far: the Boneyard (skate 3's bail X-ray), Death Races against AI riders or
+> other Megafork players, and a camera light for night clips, in the colour you like. It still
+> plays with official ReSkate players. See [FORK.md](FORK.md).
 
 play it offline, host your own lobbies and dedicated servers, and mod it.
 the launcher, the runtime that loads into the game, and the dedicated server.
