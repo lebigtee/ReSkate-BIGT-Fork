@@ -169,6 +169,10 @@ struct State {
     dingosdk::overlay::CallbacksV3 callbacks;
     dingosdk::overlay::Model model;
     std::chrono::steady_clock::time_point last_model{};
+    // How much wider the game's picture is stretched over the window than it is tall (1: not at
+    // all), as fit_to_picture last found it. The game projects its world for its picture's shape:
+    // what is placed over the world in the window is stretched as much across.
+    float picture_stretch = 1.0f;
     dingosdk::overlay::SkateMenu menu;
     dingosdk::overlay::ParkEditorUI editor;
     std::deque<ConsoleRow> console_lines;

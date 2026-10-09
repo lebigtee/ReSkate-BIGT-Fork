@@ -10,6 +10,7 @@
 #include "chat_emotes.h"
 #include "input_capture.h"
 #include "cursor.h"
+#include <cmath>
 
 namespace dingosdk::overlay::detail {
 
@@ -28,6 +29,37 @@ bool completed(UINT64 value, DWORD timeout_ms) {
     const auto after = s.fence->GetCompletedValue();
     return after != UINT64_MAX && after >= value;
 }
+
+// ImGui lays the overlay out in the window's pixels, but the game can present a smaller picture
+// that Windows stretches over the window (a 1080p resolution on an ultrawide screen). Drawn as it
+// is, everything past the picture's size would be cut off (the chat in its corner, nametags):
+// the overlay is scaled to the picture, and stretched back over the window with it, where the
+// mouse is. This is the one place that maps the window to the picture: whatever draws through
+// ImGui lays out in its display size, never in the swapchain's, or it would be scaled twice.
+namespace {
+void fit_to_picture(ImDrawData& data, const D3D12_RESOURCE_DESC& picture) {
+    const float width = static_cast<float>(picture.Width), height = static_cast<float>(picture.Height);
+    if (data.DisplaySize.x <= 0.0f || data.DisplaySize.y <= 0.0f || width <= 0.0f || height <= 0.0f) return;
+    const ImVec2 scale(width / data.DisplaySize.x, height / data.DisplaySize.y);
+    state().picture_stretch = scale.y / scale.x;
+    static ImVec2 logged(1.0f, 1.0f);
+    if (scale.x != logged.x || scale.y != logged.y) {
+        logged = scale;
+        dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+            "Overlay: the game presents %.0fx%.0f in a %.0fx%.0f window; the overlay %s.", width, height, data.DisplaySize.x,
+            data.DisplaySize.y, std::abs(scale.x - 1.0f) < 0.001f && std::abs(scale.y - 1.0f) < 0.001f ? "fits as it is" : "is scaled to it");
+    }
+    if (std::abs(scale.x - 1.0f) < 0.001f && std::abs(scale.y - 1.0f) < 0.001f) return;
+    for (int i = 0; i < data.CmdListsCount; ++i)
+        for (auto& vertex : data.CmdLists[i]->VtxBuffer) {
+            vertex.pos.x *= scale.x;
+            vertex.pos.y *= scale.y;
+        }
+    data.ScaleClipRects(scale);
+    data.DisplayPos = ImVec2(data.DisplayPos.x * scale.x, data.DisplayPos.y * scale.y);
+    data.DisplaySize = ImVec2(width, height);
+}
+} // namespace
 
 void destroy_graphics() {
     auto& s = state();
@@ -538,6 +570,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
     if (ImGui::GetDrawData()->TotalVtxCount == 0) { ImGui::SetCurrentContext(previous); return; }
+    fit_to_picture(*ImGui::GetDrawData(), frame.buffer->GetDesc());
     const auto upload_slot = static_cast<std::size_t>(s.submitted_draws % s.upload_fences.size());
     // The ImGui backend rotates upload buffers by submitted draw count, while
     // command allocators rotate by swapchain index. Wait for both exact owners
