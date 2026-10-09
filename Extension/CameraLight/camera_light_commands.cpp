@@ -1,5 +1,6 @@
 #include "camera_light.h"
 #include "Extension/Console/commands.h"
+#include <sstream>
 
 // The `light` console commands: the camera light's settings (also in the pause menu's PLAYER page).
 namespace dingosdk::console {
@@ -14,6 +15,7 @@ void register_camera_light_commands(Commands &registry) {
         {"off", "Turn the camera light off", nullptr},
         {"status", "The camera light's settings", nullptr},
         {"gain", "How bright the camera light is (1 by default)", "<0.25-4>"},
+        {"color", "The camera light's color (255 255 255, white, by default)", "<red 0-255> <green 0-255> <blue 0-255>"},
     };
     for (const auto &verb : verbs) {
         std::vector<Argument> arguments;
@@ -24,9 +26,13 @@ void register_camera_light_commands(Commands &registry) {
         }
         auto entry = action(std::string("light ") + verb.name, verb.description, Group::gameplay, std::move(arguments));
         entry.run = [name = std::string(verb.name)](const Model &, const Values &values, const Output &out) {
+            // The rest of the line, word by word (the colour takes three).
             std::vector<std::string> words;
             if (!values.empty())
-                if (const auto *text = std::get_if<std::string>(&values[0]); text && !text->empty()) words.push_back(*text);
+                if (const auto *text = std::get_if<std::string>(&values[0])) {
+                    std::istringstream line(*text);
+                    for (std::string word; line >> word;) words.push_back(word);
+                }
             out(camera_light::command(name, words));
         };
         registry.add(std::move(entry));

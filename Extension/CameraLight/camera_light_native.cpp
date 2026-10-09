@@ -170,17 +170,21 @@ std::uintptr_t find_asset(std::uintptr_t base, std::uintptr_t anchor, std::strin
 }
 
 // A spot light's data and its values as found.
+using Color = std::array<float, 3>;
 struct LightData {
     std::uintptr_t address{};
     float inner{}, range{}, outer{}, intensity{};
+    Color color{};
 };
 std::optional<LightData> light_data(std::uintptr_t object) {
     LightData data{object};
     if (!readable(object + rig_light::spot_inner_angle, &data.inner, 4) || !readable(object + rig_light::spot_attenuation_radius, &data.range, 4) ||
-        !readable(object + rig_light::spot_outer_angle, &data.outer, 4) || !readable(object + rig_light::spot_intensity, &data.intensity, 4))
+        !readable(object + rig_light::spot_outer_angle, &data.outer, 4) || !readable(object + rig_light::spot_intensity, &data.intensity, 4) ||
+        !readable(object + rig_light::spot_color, data.color.data(), sizeof(Color)))
         return std::nullopt;
     if (!(data.outer > 1.0f && data.outer < 180.0f && data.inner >= 0.0f && data.inner <= data.outer && data.range > 0.1f && data.range < 1000.0f &&
-          data.intensity > 1.0f && data.intensity < 1e9f))
+          data.intensity > 1.0f && data.intensity < 1e9f &&
+          std::all_of(data.color.begin(), data.color.end(), [](float c) { return c >= 0.0f && c <= 100.0f; })))
         return std::nullopt;
     return data;
 }
@@ -189,6 +193,11 @@ void write_light(const LightData &data) {
     writable(data.address + rig_light::spot_attenuation_radius, &data.range, 4);
     writable(data.address + rig_light::spot_outer_angle, &data.outer, 4);
     writable(data.address + rig_light::spot_intensity, &data.intensity, 4);
+    writable(data.address + rig_light::spot_color, data.color.data(), sizeof(Color));
+}
+// The setting (0xRRGGBB) as the light's colour, 1 1 1 white.
+Color lamp_color(std::uint32_t rgb) {
+    return {static_cast<float>(rgb >> 16 & 0xff) / 255.0f, static_cast<float>(rgb >> 8 & 0xff) / 255.0f, static_cast<float>(rgb & 0xff) / 255.0f};
 }
 // The rig's spot lights' data: its blueprint's objects (an array: element pointers, the count just
 // before them) that hold spot light values.
@@ -241,6 +250,7 @@ struct Rig {
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> entities;
     Light lamp;
     float gain{};
+    std::uint32_t color{};
     std::vector<LightData> changed; // the rig's data as it was, set back after restore_after_ticks
     int ticks{};
 };
@@ -286,11 +296,12 @@ Rig create(std::uintptr_t base, std::uintptr_t client) {
     Rig rig;
     rig.context = local.context;
     rig.gain = state::gain.load();
+    rig.color = state::color.load();
     rig.changed = lights;
     // For the creation: the first light a filmer's lamp, the others dark.
     for (std::size_t i = 0; i < lights.size(); ++i) {
         auto light = lights[i];
-        if (i == 0) light = {light.address, lamp_inner, lamp_range, lamp_outer, lamp_intensity * rig.gain};
+        if (i == 0) light = {light.address, lamp_inner, lamp_range, lamp_outer, lamp_intensity * rig.gain, lamp_color(rig.color)};
         else light.intensity = 0.0f;
         write_light(light);
     }
@@ -391,8 +402,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.rig.reset();
         }
         const bool wanted = ready && enabled();
-        // Off, or another brightness: the rig goes (and comes back with it).
-        if (s.rig && (!wanted || s.rig->gain != state::gain.load(std::memory_order_relaxed))) {
+        // Off, or another brightness or colour: the rig goes (and comes back with it).
+        if (s.rig && (!wanted || s.rig->gain != state::gain.load(std::memory_order_relaxed) ||
+                      s.rig->color != state::color.load(std::memory_order_relaxed))) {
             destroy(base, client, *s.rig);
             s.rig.reset();
         }
