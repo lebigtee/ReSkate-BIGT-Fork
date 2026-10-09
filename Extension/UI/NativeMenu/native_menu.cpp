@@ -2,7 +2,7 @@
 #include "native_menu_internal.h"
 #include "native_menu_dump.h"
 #include "native_throwdown_tile.h"
-#include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/Boneyard/boneyard.h"
 #include "Extension/CameraLight/camera_light.h"
 #include "Extension/DeathRace/death_race.h"
 #include "Extension/Multiplayer/Session/session.h"
@@ -118,11 +118,11 @@ Value make(const Context& context, Schema schema) {
 }
 } // namespace native_menu_detail
 namespace {
-// The Hall of Meat's settings for its rows on the tools page: same client thread as its tick.
-void refresh_hall_of_meat(State& s) {
-    const auto meat = hall_of_meat::status();
-    s.tools.hall_of_meat = {true, meat.enabled, meat.slowmo, meat.stutter};
-    s.tools.camera_light = {true, camera_light::enabled()};
+// The Boneyard's settings for its rows on the tools page: same client thread as its tick.
+void refresh_boneyard(State& s) {
+    const auto yard = boneyard::status();
+    s.tools.boneyard = {true, yard.enabled, yard.slowmo, yard.stutter, yard.glow};
+    s.tools.camera_light = {true, camera_light::enabled(), camera_light::gain(), camera_light::color()};
     // The Death Race page's races and state, the same way.
     const auto race = death_race::status();
     auto& d = s.tools.death_race;
@@ -149,7 +149,7 @@ void render(const Context& context, const MultiplayerModel& model) {
         publish_rows(context, list, slot, visible);
     };
     if (s.slot == tools_page) {
-        refresh_hall_of_meat(s);
+        refresh_boneyard(s);
         const auto selected = read<int>(context.address(context.path(s.page, {content, 0x18f8355b})));
         if (selected >= 0 && selected < static_cast<int>(s.section_total)) s.section = static_cast<Section>(selected);
         for (unsigned i = 0; i < native_tools::sections.size(); ++i) {
@@ -580,7 +580,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             { std::lock_guard pending_lock(s.mutex); requests.swap(s.pending); }
             if (!requests.empty() || now >= s.next_render)
                 s.tools_callbacks.read_model(s.tools_callbacks.user, s.tools_model);
-            if (!requests.empty()) refresh_hall_of_meat(s);
+            if (!requests.empty()) refresh_boneyard(s);
             for (const auto& request : requests) if (request.generation == s.generation.load()) {
                 // The card name field can only be read under the model lock below.
                 if (request.command == "card-name" || request.command == "card-name-reset") card_request = request.command;

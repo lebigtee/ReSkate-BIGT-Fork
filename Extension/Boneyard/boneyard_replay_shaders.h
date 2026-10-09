@@ -1,5 +1,5 @@
 #pragma once
-// Generated from hall_of_meat_replay.hlsl by fxc (the commands are at the top of that file).
+// Generated from boneyard_replay.hlsl by fxc (the commands are at the top of that file).
 // clang-format off
 #if 0
 //

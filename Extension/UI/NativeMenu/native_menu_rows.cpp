@@ -182,7 +182,7 @@ void clear_input(const Context& context, const char* id) {
 // Lists that scroll: every page's first main column, both columns of the
 // Current Session and Voice Chat sections, whose settings outgrow the screen,
 // the Custom Maps list, which grows with every map in the Mods folder, and the
-// Player list, which the Hall of Meat rows outgrow, and the Death Race lists, which grow
+// Player list, which the Boneyard rows outgrow, and the Death Race lists, which grow
 // with every race on the map.
 bool scrolling_list(unsigned page_slot, unsigned slot) {
     constexpr auto session = static_cast<unsigned>(Section::session) * 2, voice = static_cast<unsigned>(Section::voice) * 2;

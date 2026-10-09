@@ -1,5 +1,5 @@
-#include "hall_of_meat.h"
-#include "hall_of_meat_skeleton.h"
+#include "boneyard.h"
+#include "boneyard_skeleton.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -28,11 +28,11 @@
 #include <cstring>
 #include <ctime>
 
-// Game thread only. See hall_of_meat.h for how the overlay reaches this.
-namespace dingosdk::hall_of_meat {
+// Game thread only. See boneyard.h for how the overlay reaches this.
+namespace dingosdk::boneyard {
 namespace {
 using Clock = std::chrono::steady_clock;
-// The skeleton joint behind each followed point (hall_of_meat_skeleton.h). The skull is the Head
+// The skeleton joint behind each followed point (boneyard_skeleton.h). The skull is the Head
 // joint moved up: Head sits at the base of the skull, with local +X up and +Y out of the face.
 constexpr std::array<std::uint16_t, point_count> point_joints{
     7, 42, 43, 44, 45, 101, 102, 103, 103,
@@ -78,6 +78,7 @@ struct Settings {
     float duration{1.5f}; // seconds the result stays once the skater is up again
     bool slowmo{true};    // the game slows down as a bail starts (not in a multiplayer session)
     bool stutter{true};   // and the picture moves in jerks meanwhile
+    bool glow{true};      // the X-ray's bones glow, as on a lit film
 };
 struct Sample {
     double time{};
@@ -89,7 +90,7 @@ struct Impact {
     float hips{};  // the speed the hips lost
     float speed{}; // the hips' speed
 };
-// `meat probe on`: a reverse-engineering aid. Every tick of each bail (and the half second before
+// `boneyard probe on`: a reverse-engineering aid. Every tick of each bail (and the half second before
 // it) it writes the skeleton and the hits measured here beside the raw memory where the game keeps
 // its own per-body-part contact records, so they can be matched up offline. The skater physics
 // core keeps a collision object ([[core+0x2f10]+0x1040]) with 24 records of 0x70 bytes from +0x5e0;
@@ -109,7 +110,7 @@ struct Probe {
 // how the game plays there), and only while the speed is still the one set here.
 constexpr std::string_view time_scale = "SimulationTime.TimeScale";
 constexpr double slow_speed = 0.5, slow_in = 0.12, slow_hold = 1.2, slow_out = 0.6;
-// Meanwhile the overlay shows a fresh picture only now and then (hall_of_meat_hud.cpp).
+// Meanwhile the overlay shows a fresh picture only now and then (boneyard_hud.cpp).
 constexpr double stutter_for = slow_in + slow_hold;
 struct Slow {
     std::uint64_t serial{}; // the bail it is for
@@ -149,7 +150,7 @@ struct State {
     std::array<float, bone_count> peaks{};
     float hips_peak{}, speed{}, top{}, bottom{}, drop{};
     Clock::time_point results_until{};
-    std::vector<std::string> last; // `meat last`
+    std::vector<std::string> last; // `boneyard last`
     double started_real{};         // the bail's start in real seconds
     double clock{}, clock_real{};  // game time (game_time), and the real time it was last read at
     Slow slow;
@@ -170,7 +171,7 @@ double seconds() {
     QueryPerformanceCounter(&value);
     return static_cast<double>(value.QuadPart) / frequency;
 }
-// Real time, slowed down along with the game while the Hall of Meat slows it: speeds measured on
+// Real time, slowed down along with the game while the Boneyard slows it: speeds measured on
 // the skeleton stay true in slow motion.
 double game_time(State &s) {
     const double real = seconds();
@@ -190,18 +191,24 @@ float length(const Vec3 &v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] 
 Vec3 minus(const Vec3 &a, const Vec3 &b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
 
 // ---- settings ----------------------------------------------------------------------------
-std::filesystem::path settings_path() {
+std::filesystem::path reskate_folder() {
     PWSTR raw{};
     std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"hallofmeat" / L"hallofmeat.json";
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw) result = std::filesystem::path(raw) / L"ReSkate";
     if (raw) CoTaskMemFree(raw);
     return result;
+}
+std::filesystem::path settings_path() {
+    const auto folder = reskate_folder();
+    return folder.empty() ? folder : folder / L"boneyard" / L"boneyard.json";
 }
 void load_settings() {
     auto &s = state().settings;
     try {
-        const auto path = settings_path();
+        auto path = settings_path();
+        // Settings kept before the feature took its name: read once, saved under the new one.
+        std::error_code missing;
+        if (!path.empty() && !std::filesystem::exists(path, missing)) path = reskate_folder() / L"hallofmeat" / L"hallofmeat.json";
         std::ifstream file(path, std::ios::binary);
         if (!file) return;
         const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -215,8 +222,9 @@ void load_settings() {
         s.duration = std::clamp(json.value("duration", s.duration), 0.5f, 30.0f);
         s.slowmo = json.value("slowmo", s.slowmo);
         s.stutter = json.value("stutter", s.stutter);
+        s.glow = json.value("glow", s.glow);
     } catch (...) {
-        say(logging::Level::warning, "Hall of Meat: hallofmeat.json is damaged; using the defaults.");
+        say(logging::Level::warning, "Boneyard: boneyard.json is damaged; using the defaults.");
     }
 }
 void save_settings() {
@@ -232,6 +240,7 @@ void save_settings() {
         json["duration"] = static_cast<double>(s.duration);
         json["slowmo"] = s.slowmo;
         json["stutter"] = s.stutter;
+        json["glow"] = s.glow;
         std::error_code error;
         std::filesystem::create_directories(path.parent_path(), error);
         auto temporary = path;
@@ -247,7 +256,7 @@ void save_settings() {
             std::filesystem::rename(temporary, path, error);
         }
     } catch (...) {
-        say(logging::Level::warning, "Hall of Meat: could not save hallofmeat.json.");
+        say(logging::Level::warning, "Boneyard: could not save boneyard.json.");
     }
 }
 
@@ -339,7 +348,7 @@ bool resolve(State &s, double now) {
 // frame into the animation's contact block ([[core+0x3b8]+0x30], record i at +0x2d0 + i*0x80):
 // the part's position (+0x00), whether it touches something (+0x73), and for each of its two
 // contact slots how fast it meets the surface: |velocity . normal| (+0x30, +0x60) and the
-// contact's own speed (+0x34, +0x64). Read off `meat probe` recordings of this game build
+// contact's own speed (+0x34, +0x64). Read off `boneyard probe` recordings of this game build
 // (Test/probe_contacts.py). A part is told by where it is: the skeleton point it sits on.
 constexpr std::size_t contact_parts = 24, contact_records = 0x2d0, contact_stride = 0x80;
 constexpr float contact_reach = 0.12f; // metres from its joint a part's position may be
@@ -458,7 +467,7 @@ void start_bail(State &s, double now, const char *why) {
     }
     s.top = s.bottom = s.points[hips][1];
     for (const auto &[time, height] : s.heights) s.top = std::max(s.top, height);
-    say(logging::Level::info, std::format("Hall of Meat: bail {} ({}) at {:.1f} km/h, physics state {}.", s.serial, why,
+    say(logging::Level::info, std::format("Boneyard: bail {} ({}) at {:.1f} km/h, physics state {}.", s.serial, why,
                                           s.speed * 3.6f, s.watch_valid ? std::to_string(s.physics_state) : std::string("unknown")));
 }
 void finish_bail(State &s, double now, const char *why) {
@@ -468,7 +477,7 @@ void finish_bail(State &s, double now, const char *why) {
     s.phase = Phase::results;
     s.next_bail = now + 0.8; // the body settling after this one is not another
     s.results_until = Clock::now() + std::chrono::milliseconds(static_cast<int>(s.settings.duration * 1000.0f));
-    // The log line and `meat last`: every bone, so the thresholds can be checked against real bails.
+    // The log line and `boneyard last`: every bone, so the thresholds can be checked against real bails.
     std::vector<std::size_t> order(bone_count);
     for (std::size_t k = 0; k < bone_count; ++k) order[k] = k;
     std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return s.peaks[a] > s.peaks[b]; });
@@ -484,7 +493,7 @@ void finish_bail(State &s, double now, const char *why) {
         ++count;
         broken_list += std::format("{}{} ({})", broken_list.empty() ? "" : ", ", bones[k].name, severity_name(result[k]));
     }
-    say(logging::Level::info, std::format("Hall of Meat: bail {} ended ({}) after {:.1f} s: {:.1f} km/h, drop {:.1f} m, hips {:.1f} m/s; "
+    say(logging::Level::info, std::format("Boneyard: bail {} ended ({}) after {:.1f} s: {:.1f} km/h, drop {:.1f} m, hips {:.1f} m/s; "
                                           "hits from {}; {} broken{}{}; peaks (m/s): {}.",
                                           s.serial, why, now - s.started, s.speed * 3.6f, s.drop, s.hips_peak,
                                           s.bail_contacts ? "the game's contacts" : "the skeleton", count, count ? ": " : "", broken_list, peaks));
@@ -500,7 +509,7 @@ std::uint64_t observe_watch(State &s, double now) {
         if (!s.watch_lost_since) s.watch_lost_since = now;
         if (!s.watch_warned && now - s.watch_lost_since > 3.0) {
             s.watch_warned = true;
-            say(logging::Level::info, "Hall of Meat: the physics state watch is unavailable; bails are seen from the skeleton alone.");
+            say(logging::Level::info, "Boneyard: the physics state watch is unavailable; bails are seen from the skeleton alone.");
         }
         return 0;
     }
@@ -509,7 +518,7 @@ std::uint64_t observe_watch(State &s, double now) {
     s.physics_state = watch.state;
     if (riding(s.physics_state)) s.on_board_until = now + 0.15;
     if (s.physics_state != s.previous_state && logging::enabled(logging::Level::debug))
-        say(logging::Level::debug, std::format("Hall of Meat: physics state {} -> {}.", s.previous_state, s.physics_state));
+        say(logging::Level::debug, std::format("Boneyard: physics state {} -> {}.", s.previous_state, s.physics_state));
     if (!s.wipeouts_known) {
         s.wipeouts_known = true;
         s.seen_wipeouts = watch.wipeouts;
@@ -614,7 +623,7 @@ void probe_close(State &s) {
     auto &p = s.probe;
     if (!p.file.is_open()) return;
     p.file.close();
-    say(logging::Level::info, std::format("Hall of Meat: probe recorded {} frames to {}.", p.frames, p.path.string()));
+    say(logging::Level::info, std::format("Boneyard: probe recorded {} frames to {}.", p.frames, p.path.string()));
     p.frames = 0;
     p.stop_at = 0;
 }
@@ -671,7 +680,7 @@ bool set_speed(Slow &w, std::string_view value) {
     if (!result.starts_with("error")) return true;
     if (!w.warned) {
         w.warned = true;
-        say(logging::Level::info, "Hall of Meat: no slow motion: " + result);
+        say(logging::Level::info, "Boneyard: no slow motion: " + result);
     }
     return false;
 }
@@ -684,7 +693,7 @@ void end_slow(State &s, const char *why) {
     const bool ours = now && std::abs(*now - w.set) < 1e-4f;
     if (ours && w.ratio != 1.0) (void)set_speed(w, w.from_text);
     w.ratio = 1;
-    say(logging::Level::info, std::format("Hall of Meat: slow motion of bail {} over ({}{}): {} speed change(s), longest {:.3f} ms, "
+    say(logging::Level::info, std::format("Boneyard: slow motion of bail {} over ({}{}): {} speed change(s), longest {:.3f} ms, "
                                           "{:.3f} ms in all.",
                                           w.serial, why, ours ? "" : "; the speed was changed elsewhere, left as it is", w.changes,
                                           w.longest * 1000.0, w.spent * 1000.0));
@@ -736,6 +745,7 @@ void publish_view(State &s) {
     v.serial = s.serial;
     // The X-ray shows during the bail only: once the skater is up, it is gone at once.
     v.xray = s.settings.xray && (s.phase == Phase::bailing || s.settings.always);
+    v.glow = s.settings.glow;
     v.hidden = multiplayer::sample_game_ui_state(s.base).in_menu;
     v.pose = s.pose;
     v.points = s.points;
@@ -845,7 +855,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing) noexcept {
                 if (logging::enabled(logging::Level::debug)) {
                     const auto top = std::max_element(impact->bones.begin(), impact->bones.end());
                     if (*top >= 2.0f)
-                        say(logging::Level::debug, std::format("Hall of Meat: +{:.2f} s, hardest {} {:.1f} m/s, hips {:.1f} m/s at {:.1f} m/s.",
+                        say(logging::Level::debug, std::format("Boneyard: +{:.2f} s, hardest {} {:.1f} m/s, hips {:.1f} m/s at {:.1f} m/s.",
                                                                now - s.started, bones[static_cast<std::size_t>(top - impact->bones.begin())].label,
                                                                *top, impact->hips, impact->speed));
                 }
@@ -858,7 +868,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing) noexcept {
             const bool upright = s.points[hips][1] - s.bottom > 0.5f && torso[1] > 0.85f * length(torso);
             // The bail, and everything on screen, lasts until the skater is up again: on their
             // feet, back on the board, or teleported (a session marker, a respawn). Lying still is
-            // still the bail. `meat demo` holds its made-up one for a few seconds.
+            // still the bail. `boneyard demo` holds its made-up one for a few seconds.
             if (now < s.demo_until) {
             } else if (s.demo_until) {
                 s.demo_until = 0;
@@ -881,7 +891,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing) noexcept {
 Status status() noexcept {
     auto &s = state();
     load(s);
-    return {s.settings.enabled, s.settings.slowmo, s.settings.stutter};
+    return {s.settings.enabled, s.settings.slowmo, s.settings.stutter, s.settings.glow};
 }
 
 std::string command(std::string_view verb, const std::vector<std::string> &arguments) {
@@ -898,9 +908,9 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
         return std::format("{} : {}.", what, flag ? "on" : "off");
     };
     if (verb == "status") {
-        return std::format("Hall of Meat {}; X-ray {}{}; slow motion {}; jerky picture {}; sensitivity {:.2f}; result shown {:.1f} s; "
+        return std::format("Boneyard {}; X-ray {}{}, glow {}; slow motion {}; jerky picture {}; sensitivity {:.2f}; result shown {:.1f} s; "
                            "{} bail(s) this session; physics state {}; skater {}; hits from {}.",
-                           settings.enabled ? "on" : "off", settings.xray ? "on" : "off", settings.always ? " (always)" : "",
+                           settings.enabled ? "on" : "off", settings.xray ? "on" : "off", settings.always ? " (always)" : "", settings.glow ? "on" : "off",
                            settings.slowmo ? "on" : "off", settings.stutter ? "on" : "off", settings.sensitivity, settings.duration, s.serial,
                            s.watch_valid ? std::to_string(s.physics_state) : std::string("unavailable (bails seen from the skeleton alone)"),
                            s.pose ? "tracked" : "not found",
@@ -909,19 +919,20 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
     if (verb == "on" || verb == "off") {
         settings.enabled = verb == "on";
         save_settings();
-        return settings.enabled ? "Hall of Meat on." : "Hall of Meat off.";
+        return settings.enabled ? "Boneyard on." : "Boneyard off.";
     }
     if (verb == "xray") {
         if (!arguments.empty() && arguments[0] == "always") {
             settings.xray = settings.always = true;
             save_settings();
-            return "X-ray always shown (to check it sits on the skater; `meat xray 1` goes back to bails only).";
+            return "X-ray always shown (to check it sits on the skater; `boneyard xray 1` goes back to bails only).";
         }
         settings.always = false;
         return on_off(settings.xray, "X-ray");
     }
     if (verb == "slowmo") return on_off(settings.slowmo, "Slow motion as a bail starts (a replay on your screen in a multiplayer session)");
     if (verb == "stutter") return on_off(settings.stutter, "Jerky picture as a bail starts");
+    if (verb == "glow") return on_off(settings.glow, "X-ray glow");
     if (verb == "sensitivity") {
         if (arguments.empty()) return std::format("Sensitivity: {:.2f} (1 is normal, higher breaks bones more easily).", settings.sensitivity);
         const auto value = number(arguments[0]);
@@ -994,4 +1005,4 @@ std::string command(std::string_view verb, const std::vector<std::string> &argum
     }
     return "error: unknown command.";
 }
-} // namespace dingosdk::hall_of_meat
+} // namespace dingosdk::boneyard

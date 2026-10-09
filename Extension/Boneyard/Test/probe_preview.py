@@ -1,4 +1,4 @@
-# Picks a few skeleton poses from `meat probe` recordings for HomPreview.cs: the skater riding just
+# Picks a few skeleton poses from `boneyard probe` recordings for BoneyardPreview.cs: the skater riding just
 # before each bail, then a few moments into it. One line a pose: a label, then the 27 points.
 # usage: py probe_preview.py <bail_*.bin> ... > poses.txt
 import os, sys

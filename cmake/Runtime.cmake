@@ -117,7 +117,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Trainer/trainer_classes.cpp
     Extension/Trainer/trainer_commands.cpp
     Extension/Trainer/trainer_session.cpp
-    Extension/HallOfMeat/hall_of_meat.cpp
+    Extension/Boneyard/boneyard.cpp
     Extension/DeathRace/death_race.cpp
     Extension/DeathRace/death_race_format.cpp
     Extension/DeathRace/death_race_link.cpp
@@ -131,7 +131,7 @@ add_library(dingosdk_runtime SHARED
     Extension/CameraLight/camera_light.cpp
     Extension/CameraLight/camera_light_commands.cpp
     Extension/CameraLight/camera_light_native.cpp
-    Extension/HallOfMeat/hall_of_meat_commands.cpp
+    Extension/Boneyard/boneyard_commands.cpp
     Extension/Skater/offboard_flight.cpp
     Extension/Skater/camera_observer.cpp
     Extension/Boot/offline_boot.cpp
@@ -239,19 +239,19 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
 endif()
-# The Hall of Meat's skeleton sheet and panel artwork (Extension/HallOfMeat/hall_of_meat_hud.cpp).
-set(dingosdk_hom_bones "${PROJECT_SOURCE_DIR}/Extension/HallOfMeat/assets/bones.png")
-set(dingosdk_hom_panel "${PROJECT_SOURCE_DIR}/Extension/HallOfMeat/assets/panel.png")
-file(TO_NATIVE_PATH "${dingosdk_hom_bones}" dingosdk_hom_bones_native)
-file(TO_NATIVE_PATH "${dingosdk_hom_panel}" dingosdk_hom_panel_native)
-string(REPLACE "\\" "\\\\" dingosdk_hom_bones_native "${dingosdk_hom_bones_native}")
-string(REPLACE "\\" "\\\\" dingosdk_hom_panel_native "${dingosdk_hom_panel_native}")
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc"
-    "HOM_BONES RCDATA \"${dingosdk_hom_bones_native}\"\n"
-    "HOM_PANEL RCDATA \"${dingosdk_hom_panel_native}\"\n")
-set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc" PROPERTIES OBJECT_DEPENDS
-    "${dingosdk_hom_bones};${dingosdk_hom_panel}")
-target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/hall_of_meat.rc")
+# The Boneyard's skeleton sheet and panel artwork (Extension/Boneyard/boneyard_hud.cpp).
+set(dingosdk_boneyard_bones "${PROJECT_SOURCE_DIR}/Extension/Boneyard/assets/bones.png")
+set(dingosdk_boneyard_panel "${PROJECT_SOURCE_DIR}/Extension/Boneyard/assets/panel.png")
+file(TO_NATIVE_PATH "${dingosdk_boneyard_bones}" dingosdk_boneyard_bones_native)
+file(TO_NATIVE_PATH "${dingosdk_boneyard_panel}" dingosdk_boneyard_panel_native)
+string(REPLACE "\\" "\\\\" dingosdk_boneyard_bones_native "${dingosdk_boneyard_bones_native}")
+string(REPLACE "\\" "\\\\" dingosdk_boneyard_panel_native "${dingosdk_boneyard_panel_native}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/boneyard.rc"
+    "BONEYARD_BONES RCDATA \"${dingosdk_boneyard_bones_native}\"\n"
+    "BONEYARD_PANEL RCDATA \"${dingosdk_boneyard_panel_native}\"\n")
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/generated/boneyard.rc" PROPERTIES OBJECT_DEPENDS
+    "${dingosdk_boneyard_bones};${dingosdk_boneyard_panel}")
+target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/boneyard.rc")
 if(EXISTS "${dingosdk_startup_art}")
     file(TO_NATIVE_PATH "${dingosdk_startup_art}" dingosdk_startup_art_native)
     string(REPLACE "\\" "\\\\" dingosdk_startup_art_native "${dingosdk_startup_art_native}")

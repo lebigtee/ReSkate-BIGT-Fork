@@ -1,6 +1,6 @@
-# Replays recorded bails through the Hall of Meat's rules with the game's contacts (as
-# hall_of_meat.cpp reads them): which bones each bail would break. Keep the tables in step with
-# hall_of_meat.h (fragility) and hall_of_meat.cpp (thresholds, point_bone, contact_reach).
+# Replays recorded bails through the Boneyard's rules with the game's contacts (as
+# boneyard.cpp reads them): which bones each bail would break. Keep the tables in step with
+# boneyard.h (fragility) and boneyard.cpp (thresholds, point_bone, contact_reach).
 # usage: py probe_replay.py <bail_*.bin> ...
 import struct, sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

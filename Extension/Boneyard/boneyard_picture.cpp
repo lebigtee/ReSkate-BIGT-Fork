@@ -1,6 +1,6 @@
-#include "hall_of_meat_picture.h"
-#include "hall_of_meat_hud.h"
-#include "hall_of_meat_replay.h"
+#include "boneyard_picture.h"
+#include "boneyard_hud.h"
+#include "boneyard_replay.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include <wrl/client.h>
@@ -33,8 +33,8 @@ Clock::time_point picture_replay_used{};
 
 // Keeps a copy of this frame's picture, or puts the kept copy back in its place. Two copies of
 // the screen on the GPU at most; the game itself runs on at full speed.
-void hold_picture(const HallOfMeatFrame &frame, const FrameHold &hold) {
-    DINGO_PROFILE_ZONE("overlay/hall of meat picture");
+void hold_picture(const BoneyardFrame &frame, const FrameHold &hold) {
+    DINGO_PROFILE_ZONE("overlay/boneyard picture");
     using Action = FrameHold::Action;
     auto &h = held();
     const auto now = Clock::now();
@@ -58,7 +58,7 @@ void hold_picture(const HallOfMeatFrame &frame, const FrameHold &hold) {
         const auto created = frame.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &picture, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
                                                                    IID_PPV_ARGS(&h.picture));
         const auto took = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-        logging::printf(logging::Level::info, logging::Channel::graphics, "Hall of Meat: picture copy %llux%u %s in %.2f ms.",
+        logging::printf(logging::Level::info, logging::Channel::graphics, "Boneyard: picture copy %llux%u %s in %.2f ms.",
                         static_cast<unsigned long long>(desc.Width), desc.Height, SUCCEEDED(created) ? "created" : "unavailable", took);
         if (FAILED(created)) {
             h.picture.Reset();
@@ -93,15 +93,15 @@ void hold_picture(const HallOfMeatFrame &frame, const FrameHold &hold) {
 // pipeline is made while a bail would be replayed (a multiplayer session), before one comes; the
 // kept pictures are let go 10 s after the last replay, and everything once no bail would be
 // replayed.
-void replay_picture(const HallOfMeatFrame &frame, const FrameHold::Replay &plan) {
-    DINGO_PROFILE_ZONE("overlay/hall of meat replay");
+void replay_picture(const BoneyardFrame &frame, const FrameHold::Replay &plan) {
+    DINGO_PROFILE_ZONE("overlay/boneyard replay");
     auto &replay = picture_replay();
     const auto now = Clock::now();
     const bool busy = plan.keep_slot >= 0 || plan.show_slot >= 0;
     if (busy) picture_replay_used = now;
     if (!busy && replay.prepared() && now - picture_replay_used > std::chrono::seconds(10) && frame.gpu_idle) {
         if (replay.bytes()) {
-            logging::printf(logging::Level::info, logging::Channel::graphics, "Hall of Meat: replay let go of %.1f MB of pictures.",
+            logging::printf(logging::Level::info, logging::Channel::graphics, "Boneyard: replay let go of %.1f MB of pictures.",
                             replay.bytes() / 1048576.0);
             replay.release_pictures();
         }
@@ -115,30 +115,30 @@ void replay_picture(const HallOfMeatFrame &frame, const FrameHold::Replay &plan)
         const auto started = Clock::now();
         const bool ok = replay.prepare(frame.device, frame.buffer->GetDesc(), error);
         const auto took = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
-        if (ok) logging::printf(logging::Level::info, logging::Channel::graphics, "Hall of Meat: slow motion replay ready in %.2f ms.", took);
+        if (ok) logging::printf(logging::Level::info, logging::Channel::graphics, "Boneyard: slow motion replay ready in %.2f ms.", took);
         else if (!warned) {
             warned = true;
-            logging::printf(logging::Level::warning, logging::Channel::graphics, "Hall of Meat: no slow motion replay: %s.", error.c_str());
+            logging::printf(logging::Level::warning, logging::Channel::graphics, "Boneyard: no slow motion replay: %s.", error.c_str());
         }
         if (!ok) return;
     }
     if (plan.keep_slot >= 0 && !replay.keep(frame.commands, frame.buffer, static_cast<std::size_t>(plan.keep_slot), plan.keep_id, error) &&
         !warned) {
         warned = true;
-        logging::printf(logging::Level::warning, logging::Channel::graphics, "Hall of Meat: replay picture not kept: %s.", error.c_str());
+        logging::printf(logging::Level::warning, logging::Channel::graphics, "Boneyard: replay picture not kept: %s.", error.c_str());
     }
     if (plan.show_slot >= 0)
         (void)replay.show(frame.commands, frame.buffer, frame.target, static_cast<std::size_t>(plan.show_slot), plan.show_id, plan.opacity);
 }
 } // namespace
 
-void hall_of_meat_picture(const HallOfMeatFrame &frame) {
-    const auto hold = hall_of_meat_frame_hold();
+void boneyard_picture(const BoneyardFrame &frame) {
+    const auto hold = boneyard_frame_hold();
     hold_picture(frame, hold);
     replay_picture(frame, hold.replay);
 }
 
-void release_hall_of_meat_pictures() {
+void release_boneyard_pictures() {
     held() = {};
     picture_replay().release();
 }

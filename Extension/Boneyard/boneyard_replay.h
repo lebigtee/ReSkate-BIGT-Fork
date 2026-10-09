@@ -1,7 +1,7 @@
 #pragma once
 // skate 3's slow motion where the game's own speed must not change (a multiplayer session): the
 // bail's first moments are kept as small pictures on the GPU, then drawn back over the game's
-// picture at half speed and faded out (hall_of_meat_hud.cpp decides which and when). Recorded on
+// picture at half speed and faded out (boneyard_hud.cpp decides which and when). Recorded on
 // the overlay's command list before it draws; render thread only. Needs nothing but D3D12, so
 // Test/replay_test.cpp runs it on WARP.
 #include <d3d12.h>

@@ -1,8 +1,8 @@
-// Draws the Hall of Meat's X-ray offline, as hall_of_meat_hud.cpp does in game: real skeleton
-// poses from `meat probe` recordings (probe_preview.py writes them out), seen by a camera at a few
+// Draws the Boneyard's X-ray offline, as boneyard_hud.cpp does in game: real skeleton
+// poses from `boneyard probe` recordings (probe_preview.py writes them out), seen by a camera at a few
 // angles round the skater, each laid over with the sprite tables (skeleton_spec.py cpp) from
 // assets/bones.png as there: the front drawing, with the back's skull when seen from behind.
-// Keep place(), twin_of() and seen_from_behind() in step with hall_of_meat_hud.cpp.
+// Keep place(), twin_of() and seen_from_behind() in step with boneyard_hud.cpp.
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -11,8 +11,8 @@ using System.Drawing.Imaging;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-public static class HomPreview {
-    // Points as hall_of_meat.h numbers them.
+public static class BoneyardPreview {
+    // Points as boneyard.h numbers them.
     static readonly string[] Points = { "hips", "spine", "spine1", "spine2", "spine3", "neck", "neck1", "head", "skull",
         "right_clavicle", "right_shoulder", "right_elbow", "right_wrist", "right_knuckles",
         "left_clavicle", "left_shoulder", "left_elbow", "left_wrist", "left_knuckles",
@@ -27,7 +27,7 @@ public static class HomPreview {
     static List<Sprite> front = new List<Sprite>();
     static Sprite backSkull;
     public static void LoadTables(string[] lines) {
-        var row = new Regex(@"\{meat::(\w+), meat::(\w+), (\d+), (\d+), \{(-?\d+), (-?\d+)\}, \{(-?\d+), (-?\d+)\}, (\d+), (\d+), (\d+), (\d+), Breadth::(\w+), (\w+)\}");
+        var row = new Regex(@"\{yard::(\w+), yard::(\w+), (\d+), (\d+), \{(-?\d+), (-?\d+)\}, \{(-?\d+), (-?\d+)\}, (\d+), (\d+), (\d+), (\d+), Breadth::(\w+), (\w+)\}");
         foreach (var line in lines) {
             var m = row.Match(line);
             if (!m.Success) continue;

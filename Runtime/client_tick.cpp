@@ -27,7 +27,7 @@
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/DeathRace/death_race.h"
 #include "Extension/Trainer/trainer.h"
-#include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/Boneyard/boneyard.h"
 #include "Extension/CameraLight/camera_light_native.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
@@ -1032,8 +1032,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
         }
         {
-            DINGO_PROFILE_ZONE("tick/hall of meat");
-            dingosdk::hall_of_meat::tick(r.base, client, multiplayer_ready);
+            DINGO_PROFILE_ZONE("tick/boneyard");
+            dingosdk::boneyard::tick(r.base, client, multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/death race");

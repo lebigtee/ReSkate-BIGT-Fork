@@ -1,8 +1,8 @@
-// The Hall of Meat's slow motion replay (hall_of_meat_replay.cpp): one picture drawn over the
+// The Boneyard's slow motion replay (boneyard_replay.cpp): one picture drawn over the
 // whole target, scaled with a linear filter. The pipeline's blend factor fades it over what is
-// there. Compiled into hall_of_meat_replay_shaders.h with the Windows SDK's fxc:
-//   fxc /nologo /T vs_5_0 /E vs /O3 /Vn replay_vs /Fh vs.h hall_of_meat_replay.hlsl
-//   fxc /nologo /T ps_5_0 /E ps /O3 /Vn replay_ps /Fh ps.h hall_of_meat_replay.hlsl
+// there. Compiled into boneyard_replay_shaders.h with the Windows SDK's fxc:
+//   fxc /nologo /T vs_5_0 /E vs /O3 /Vn replay_vs /Fh vs.h boneyard_replay.hlsl
+//   fxc /nologo /T ps_5_0 /E ps /O3 /Vn replay_ps /Fh ps.h boneyard_replay.hlsl
 // (the two outputs one after the other).
 Texture2D picture : register(t0);
 SamplerState smooth : register(s0);

@@ -1,6 +1,6 @@
 # ReSkate
 
-> **This is the Hall of Meat fork of ReSkate**, on the `hall-of-meat` branch. It adds the Hall of Meat
+> **This is the Boneyard fork of ReSkate**, on the `boneyard` branch. It adds the Boneyard
 > from skate 3, Death Races against AI riders or other fork players, and a camera light for night
 > clips, and still plays with official ReSkate players. See [FORK.md](FORK.md).
 

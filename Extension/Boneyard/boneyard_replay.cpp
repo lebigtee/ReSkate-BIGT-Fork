@@ -1,4 +1,4 @@
-#include "hall_of_meat_replay.h"
+#include "boneyard_replay.h"
 #include <Windows.h>
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 
 namespace dingosdk::overlay {
 namespace {
-#include "hall_of_meat_replay_shaders.h"
+#include "boneyard_replay_shaders.h"
 
 using Microsoft::WRL::ComPtr;
 

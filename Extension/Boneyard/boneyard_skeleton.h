@@ -2,11 +2,11 @@
 // Animation/Dingo/AnimBase_Default_Skeleton, the 395-joint skeleton every skater's animation pose
 // uses (the per-body 137-joint skeletons are render rigs). Each joint's parent, -1 for the root;
 // every parent comes before its children. Read from the game's data (build 25414733) with
-// dingosdk_hall_of_meat_skeleton_dump <Skate folder> --dump animation/dingo/animbase_default_skeleton.
+// dingosdk_boneyard_skeleton_dump <Skate folder> --dump animation/dingo/animbase_default_skeleton.
 #include <array>
 #include <cstdint>
 
-namespace dingosdk::hall_of_meat {
+namespace dingosdk::boneyard {
 inline constexpr std::size_t skeleton_joints = 395;
 inline constexpr std::array<std::int16_t, skeleton_joints> skeleton_parents{
     -1, 0, 1, 1, 3, 1, 5, 1, 7, 8, 9, 10, 10, 12, 12, 9, 9, 16, 9, 9,
@@ -30,4 +30,4 @@ inline constexpr std::array<std::int16_t, skeleton_joints> skeleton_parents{
     341, 360, 360, 360, 360, 360, 360, 341, 341, 341, 341, 370, 370, 370, 370, 1, 375, 375, 375, 375,
     1, 380, 381, 382, 382, 382, 381, 386, 386, 386, 380, 380, 380, 380, 380,
 };
-} // namespace dingosdk::hall_of_meat
+} // namespace dingosdk::boneyard

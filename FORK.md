@@ -1,9 +1,9 @@
-# The Hall of Meat fork of ReSkate
+# The Boneyard fork of ReSkate
 
 This fork adds three things to [ReSkate](https://github.com/Dingo-Shenanigans/ReSkate) and changes
 nothing else:
 
-- **[Hall of Meat](Extension/HallOfMeat/README.md)**: skate 3's bail mini-game. Bail, and see
+- **[Boneyard](Extension/Boneyard/README.md)**: skate 3's bail mini-game. Bail, and see
   which bones you broke on an X-ray, with the slow motion and the jerky picture of the original.
 - **[Death Race](Extension/DeathRace/README.md)**: downhill races you make yourself, raced against
   AI riders, or against other players who run this fork.
@@ -11,18 +11,18 @@ nothing else:
   one of the game's own lights.
 
 Everything works on a controller. Each is switched from the pause menu's **CUSTOM STUFF › PLAYER**
-(and the Death Race from **Throwdowns**), or from the console (`meat`, `race`, `light`).
+(and the Death Race from **Throwdowns**), or from the console (`boneyard`, `race`, `light`).
 
 ## Playing with official ReSkate players
 
 The fork plays with everyone on official ReSkate servers and sessions: its own features are local
-to the player (the Hall of Meat, the camera light), or only between players of the fork (a Death
+to the player (the Boneyard, the camera light), or only between players of the fork (a Death
 Race offered in a session is carried by ReSkate's throwdown relay under its own series, which
 official builds ignore without a word). In a session with real players, AI riders step aside.
 
 ## Where the fork's code is
 
-- `Extension/HallOfMeat`, `Extension/DeathRace`, `Extension/CameraLight`: the fork itself. Each
+- `Extension/Boneyard`, `Extension/DeathRace`, `Extension/CameraLight`: the fork itself. Each
   folder's README lists its files.
 - `Engine/Game/Build/20260929/no_bail.h`, `camera_light.h`: what the fork knows of the game's
   native code, beside ReSkate's own.
@@ -30,8 +30,8 @@ official builds ignore without a word). In a session with real players, AI rider
   versions easy):
   - `Runtime/client_tick.cpp`, `Runtime/runtime_init.cpp`: the fork's per-tick calls and the
     session marker guard;
-  - `Extension/UI/Overlay/overlay_render.cpp`: the Hall of Meat's and the Death Race's drawing
-    calls (a dozen lines; the GPU work is `Extension/HallOfMeat/hall_of_meat_picture.cpp`);
+  - `Extension/UI/Overlay/overlay_render.cpp`: the Boneyard's and the Death Race's drawing
+    calls (a dozen lines; the GPU work is `Extension/Boneyard/boneyard_picture.cpp`);
   - `Extension/UI/NativeMenu/` (`native_throwdown_tile.cpp` is the fork's; `native_menu.cpp`,
     `native_tools_view.h`, `native_menu_rows.cpp`): the PLAYER page's rows and the Death Race
     tile and setup page;
@@ -59,7 +59,7 @@ cmake --build build/tests-x64 --config Release --target dingosdk_death_race_test
 - `dingosdk_throwdown_relay_tests` (ReSkate's, extended): Death Race races between players, as
   the relay carries them.
 - `dingosdk_native_tools_view_tests` (ReSkate's, extended): the PLAYER page's fork rows.
-- `dingosdk_hall_of_meat_skeleton_dump <Skate folder> [<word> | --dump <asset>]`: lists the
+- `dingosdk_boneyard_skeleton_dump <Skate folder> [<word> | --dump <asset>]`: lists the
   game's assets by name, or prints an asset's fields with their offsets.
 
 What the game alone can tell (the AI riders' riding, the X-ray, the light) is tested in play.
@@ -75,9 +75,9 @@ assumptions about the game to check again:
   against a fingerprint before it is hooked).
 - `Engine/Game/Build/20260929/camera_light.h`: the light rig's layout and its lights' transform
   setter (checked against its code before use).
-- `Extension/HallOfMeat/hall_of_meat.cpp`, `hall_of_meat_skeleton.h`: the animation skeleton's
-  joints (`dingosdk_hall_of_meat_skeleton_dump` reads them from the game's data again) and the
-  contacts' layout (`meat probe` records what the game writes).
+- `Extension/Boneyard/boneyard.cpp`, `boneyard_skeleton.h`: the animation skeleton's
+  joints (`dingosdk_boneyard_skeleton_dump` reads them from the game's data again) and the
+  contacts' layout (`boneyard probe` records what the game writes).
 - `Extension/DeathRace/death_race.cpp`: the riders' player records (the game's UIPlayerInfo
   layout) and the skater's physics states; `death_race_line.cpp`: the push request flag.
 - `Extension/UI/NativeMenu/native_throwdown_tile.cpp`: the Throwdowns screen's widgets.
@@ -99,12 +99,12 @@ beside them (`death_race_internal.h`, `death_race_riders_internal.h`, `camera_li
 
 ReSkate is free software under the GNU General Public License v3 (`LICENSE`), and so is this fork:
 it is a modified version of ReSkate, changed from October 2026 on (its changes and their dates are
-its git history, on the `hall-of-meat` branch). Whoever shares its build shares its source with
+its git history, on the `boneyard` branch). Whoever shares its build shares its source with
 it, under the same license.
 
 ## Assets
 
-The Hall of Meat's skeleton drawings and its panel, the X-rays of its collage included, were made
+The Boneyard's skeleton drawings and its panel, the X-rays of its collage included, were made
 for the mod by its author.
 
 ## Known limits

@@ -90,7 +90,7 @@ struct View {
 View view() noexcept;
 void publish(const View &) noexcept;
 // True while a race is counted down or raced (any thread): other features stay out of the way
-// (the Hall of Meat's slow motion would stretch the clock).
+// (the Boneyard's slow motion would stretch the clock).
 bool racing() noexcept;
 void set_racing(bool) noexcept;
 

@@ -1,7 +1,7 @@
-// Finds and prints the game's skeleton assets, to build hall_of_meat_skeleton.h from the
+// Finds and prints the game's skeleton assets, to build boneyard_skeleton.h from the
 // Animation/Dingo/AnimBase_Default_Skeleton the skater's pose uses.
-//   dingosdk_hall_of_meat_skeleton_dump <Skate folder> [<word>]          ebx names containing the word ("skeleton")
-//   dingosdk_hall_of_meat_skeleton_dump <Skate folder> --dump <asset name>  every field of the asset (with its offset
+//   dingosdk_boneyard_skeleton_dump <Skate folder> [<word>]          ebx names containing the word ("skeleton")
+//   dingosdk_boneyard_skeleton_dump <Skate folder> --dump <asset name>  every field of the asset (with its offset
 //                                                                           in its instance), arrays in full
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
@@ -57,7 +57,7 @@ void print(const ebx::Value &value, int depth, const std::string &indent) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        std::cerr << "usage: dingosdk_hall_of_meat_skeleton_dump <Skate folder> [<word> | --dump <asset name>]\n";
+        std::cerr << "usage: dingosdk_boneyard_skeleton_dump <Skate folder> [<word> | --dump <asset name>]\n";
         return 2;
     }
     try {

@@ -175,33 +175,73 @@ int main() {
             check(split.destination.empty(), "Splash cannot be selected");
         }
         {
-            // The Hall of Meat: locked until its settings are copied in, then each row flips one.
-            State meat;
+            // The Boneyard: locked until its settings are copied in, then each row flips one.
+            State yard;
             overlay::Model none;
             const auto row = [](const Page& page, std::string_view id) -> const Row* {
                 for (const auto& r : page.main) if (r.id == id) return &r;
                 return nullptr;
             };
-            auto page = render(meat, none, cb, player_section);
-            check(row(page, "hall-of-meat") && row(page, "hall-of-meat")->command.empty(), "Hall of Meat waits for its settings");
-            meat.hall_of_meat = {true, true, true, false};
-            page = render(meat, none, cb, player_section);
-            check(row(page, "hall-of-meat")->title == "Hall of Meat: On" && row(page, "hall-of-meat")->command == "hall-of-meat",
-                "Hall of Meat shows it is on");
-            check(row(page, "hall-of-meat-slowmo")->title == "Bail slow motion: On" && row(page, "hall-of-meat-stutter")->title == "Bail stutter: Off",
-                "Slow motion and stutter show their own settings");
-            activate(meat, none, cb, "hall-of-meat", "");
-            check(capture.command == "meat off", "Hall of Meat turns off");
-            activate(meat, none, cb, "hall-of-meat-slowmo", "");
-            check(capture.command == "meat slowmo 0", "Slow motion turns off");
-            activate(meat, none, cb, "hall-of-meat-stutter", "");
-            check(capture.command == "meat stutter 1", "Stutter turns on");
-            meat.hall_of_meat.on = false;
-            page = render(meat, none, cb, player_section);
-            check(row(page, "hall-of-meat")->command == "hall-of-meat" && row(page, "hall-of-meat-slowmo")->command.empty() &&
-                  row(page, "hall-of-meat-stutter")->command.empty(), "With it off, only Hall of Meat itself can be pressed");
-            activate(meat, none, cb, "hall-of-meat", "");
-            check(capture.command == "meat on", "Hall of Meat turns on");
+            auto page = render(yard, none, cb, player_section);
+            check(row(page, "boneyard") && row(page, "boneyard")->command.empty(), "Boneyard waits for its settings");
+            yard.boneyard = {true, true, true, false, true};
+            page = render(yard, none, cb, player_section);
+            check(row(page, "boneyard")->title == "Boneyard: On" && row(page, "boneyard")->command == "boneyard",
+                "Boneyard shows it is on");
+            check(row(page, "boneyard-slowmo")->title == "Bail slow motion: On" && row(page, "boneyard-stutter")->title == "Bail stutter: Off" &&
+                  row(page, "boneyard-glow")->title == "X-ray glow: On",
+                "Slow motion, stutter and glow show their own settings");
+            activate(yard, none, cb, "boneyard", "");
+            check(capture.command == "boneyard off", "Boneyard turns off");
+            activate(yard, none, cb, "boneyard-slowmo", "");
+            check(capture.command == "boneyard slowmo 0", "Slow motion turns off");
+            activate(yard, none, cb, "boneyard-stutter", "");
+            check(capture.command == "boneyard stutter 1", "Stutter turns on");
+            activate(yard, none, cb, "boneyard-glow", "");
+            check(capture.command == "boneyard glow 0", "The glow turns off");
+            yard.boneyard.on = false;
+            page = render(yard, none, cb, player_section);
+            check(row(page, "boneyard")->command == "boneyard" && row(page, "boneyard-slowmo")->command.empty() &&
+                  row(page, "boneyard-stutter")->command.empty() && row(page, "boneyard-glow")->command.empty(),
+                  "With it off, only Boneyard itself can be pressed");
+            activate(yard, none, cb, "boneyard", "");
+            check(capture.command == "boneyard on", "Boneyard turns on");
+        }
+        {
+            // The camera light: its brightness and colour a step a press, while it is on.
+            State light;
+            overlay::Model none;
+            const auto row = [](const Page& page, std::string_view id) -> const Row* {
+                for (const auto& r : page.main) if (r.id == id) return &r;
+                return nullptr;
+            };
+            auto page = render(light, none, cb, player_section);
+            check(row(page, "camera-light") && row(page, "camera-light")->command.empty() && row(page, "camera-light-gain")->command.empty(),
+                "The camera light waits for its settings");
+            light.camera_light = {true, false, 1.0f, {255, 255, 255}};
+            page = render(light, none, cb, player_section);
+            check(row(page, "camera-light")->command == "camera-light" && row(page, "camera-light-color")->command.empty(),
+                "Off, only the light itself can be pressed");
+            light.camera_light.on = true;
+            page = render(light, none, cb, player_section);
+            check(row(page, "camera-light-gain")->title == "Light intensity: 100%" && row(page, "camera-light-color")->title == "Light color: White" &&
+                  row(page, "camera-light-red")->title == "Red: 255", "The rows show the light's settings");
+            activate(light, none, cb, row(page, "camera-light-gain")->command, row(page, "camera-light-gain")->argument);
+            check(capture.command == "light gain 1.50", "Intensity takes the next step");
+            light.camera_light.gain = 4.0f;
+            activate(light, none, cb, "camera-light-gain", "");
+            check(capture.command == "light gain 0.25", "Past the brightest, intensity starts again from the dimmest");
+            activate(light, none, cb, "camera-light-color", "");
+            check(capture.command == "light color 255 190 120", "White is followed by Warm");
+            activate(light, none, cb, row(page, "camera-light-green")->command, row(page, "camera-light-green")->argument);
+            check(capture.command == "light color 255 0 255", "Green at its most starts again from none");
+            light.camera_light.color = {255, 0, 255};
+            page = render(light, none, cb, player_section);
+            check(row(page, "camera-light-color")->title == "Light color: Custom", "A colour set channel by channel is Custom");
+            activate(light, none, cb, "camera-light-color", "");
+            check(capture.command == "light color 255 255 255", "From Custom the colours start again from White");
+            activate(light, none, cb, "camera-light-channel", "Blue");
+            check(capture.command == "light color 255 0 0", "Blue at its most starts again from none");
         }
         {
             // Death Races: this map's races to pick, and a new one set flag by flag.

@@ -1,21 +1,22 @@
-#include "hall_of_meat.h"
+#include "boneyard.h"
 #include "Extension/Console/commands.h"
 
-// The `meat` console commands: every Hall of Meat setting, and the tools to try it out.
+// The `boneyard` console commands: every Boneyard setting, and the tools to try it out.
 namespace dingosdk::console {
-void register_hall_of_meat_commands(Commands &registry) {
+void register_boneyard_commands(Commands &registry) {
     struct Verb {
         const char *name;
         const char *description;
         const char *usage;
     };
     const Verb verbs[]{
-        {"status", "What the Hall of Meat is doing", nullptr},
+        {"status", "What the Boneyard is doing", nullptr},
         {"on", "Show the bones you break when you bail", nullptr},
-        {"off", "Turn the Hall of Meat off", nullptr},
+        {"off", "Turn the Boneyard off", nullptr},
         {"xray", "Draw the skeleton over the skater during a bail", "0|1|always"},
         {"slowmo", "Slow motion as a bail starts: the game alone, a replay on your screen in a multiplayer session", "0|1"},
         {"stutter", "Make the picture jerky as a bail starts (alone; the replay always is)", "0|1"},
+        {"glow", "A glow round the X-ray's bones, as on a lit film", "0|1"},
         {"sensitivity", "How easily bones break: 1 is normal, higher breaks more", "<0.25-4>"},
         {"duration", "Seconds the result stays once the skater is up again", "<0.5-30>"},
         {"drop", "Teleport the skater up to fall and bail (default 12 m)", "[metres]"},
@@ -30,7 +31,9 @@ void register_hall_of_meat_commands(Commands &registry) {
             rest.rest = true;
             arguments.push_back(std::move(rest));
         }
-        auto entry = action(std::string("meat ") + verb.name, verb.description, Group::gameplay, std::move(arguments));
+        auto entry = action(std::string("boneyard ") + verb.name, verb.description, Group::gameplay, std::move(arguments));
+        // Its first name's commands still work.
+        entry.aliases = {std::string("meat ") + verb.name};
         entry.run = [name = std::string(verb.name)](const Model &, const Values &values, const Output &out) {
             std::vector<std::string> words;
             if (!values.empty())
@@ -43,7 +46,7 @@ void register_hall_of_meat_commands(Commands &registry) {
                         start = end + 1;
                     }
                 }
-            out(hall_of_meat::command(name, words));
+            out(boneyard::command(name, words));
         };
         registry.add(std::move(entry));
     }

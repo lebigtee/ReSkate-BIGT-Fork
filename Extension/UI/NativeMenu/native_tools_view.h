@@ -16,11 +16,16 @@ struct State {
     std::string destination, feedback;
     unsigned lot{};
     ParkChoices parks, seen_parks;
-    // The Hall of Meat's settings (Extension/HallOfMeat), copied in before each render and
+    // The Boneyard's settings (Extension/Boneyard), copied in before each render and
     // activation; its rows stay locked until they are.
-    struct HallOfMeat { bool available{}, on{}, slowmo{}, stutter{}; } hall_of_meat;
-    // The camera light's (Extension/CameraLight), the same way.
-    struct CameraLight { bool available{}, on{}; } camera_light;
+    struct Boneyard { bool available{}, on{}, slowmo{}, stutter{}, glow{}; } boneyard;
+    // The camera light's (Extension/CameraLight), the same way: its brightness (times the usual)
+    // and colour (red, green, blue, 0-255).
+    struct CameraLight {
+        bool available{}, on{};
+        float gain = 1.0f;
+        std::array<int, 3> color{255, 255, 255};
+    } camera_light;
     // The Death Race's (Extension/DeathRace), copied in the same way.
     struct DeathRace {
         struct Entry { std::string name; double best{}; std::size_t checkpoints{}; };
@@ -133,6 +138,31 @@ inline std::vector<std::string> time_of_day_commands(const overlay::Model& m, un
     }
     return commands;
 }
+// The camera light's steps: each press of its rows takes the next one, round to the first.
+inline constexpr std::array<float, 8> light_gains{0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f};
+inline constexpr std::array<int, 9> light_channel_steps{0, 32, 64, 96, 128, 160, 192, 224, 255};
+struct LightColor { const char* name; std::array<int, 3> rgb; };
+inline constexpr std::array<LightColor, 11> light_colors{{
+    {"White", {255, 255, 255}}, {"Warm", {255, 190, 120}}, {"Cool", {190, 215, 255}}, {"Red", {255, 40, 40}},
+    {"Orange", {255, 140, 30}}, {"Yellow", {255, 230, 60}}, {"Green", {60, 255, 90}}, {"Cyan", {60, 230, 255}},
+    {"Blue", {50, 90, 255}}, {"Purple", {170, 70, 255}}, {"Pink", {255, 90, 200}}}};
+inline constexpr std::array<const char*, 3> light_channel_names{"Red", "Green", "Blue"};
+inline float next_light_gain(float gain) {
+    const auto next = std::upper_bound(light_gains.begin(), light_gains.end(), gain + 0.001f);
+    return next == light_gains.end() ? light_gains.front() : *next;
+}
+inline int next_light_channel(int value) {
+    const auto next = std::upper_bound(light_channel_steps.begin(), light_channel_steps.end(), value);
+    return next == light_channel_steps.end() ? light_channel_steps.front() : *next;
+}
+// The named colour the light has, or nothing (one set channel by channel).
+inline const LightColor* light_color_named(const std::array<int, 3>& rgb) {
+    for (const auto& color : light_colors) if (color.rgb == rgb) return &color;
+    return nullptr;
+}
+inline std::string light_color_command(const std::array<int, 3>& rgb) {
+    return "light color " + std::to_string(rgb[0]) + " " + std::to_string(rgb[1]) + " " + std::to_string(rgb[2]);
+}
 inline std::string race_time(double seconds) {
     const int whole = static_cast<int>(seconds);
     return std::to_string(whole / 60) + ":" + (whole % 60 < 10 ? "0" : "") + std::to_string(whole % 60) + "." +
@@ -207,13 +237,33 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
-    } else if (command == "hall-of-meat" || command == "hall-of-meat-slowmo" || command == "hall-of-meat-stutter") {
-        const auto& h = s.hall_of_meat;
-        if (command == "hall-of-meat") console(h.on ? "meat off" : "meat on", h.available);
-        else if (command == "hall-of-meat-slowmo") console(std::string("meat slowmo ") + (h.slowmo ? "0" : "1"), h.available && h.on);
-        else console(std::string("meat stutter ") + (h.stutter ? "0" : "1"), h.available && h.on);
+    } else if (command == "boneyard" || command == "boneyard-slowmo" || command == "boneyard-stutter" || command == "boneyard-glow") {
+        const auto& h = s.boneyard;
+        if (command == "boneyard") console(h.on ? "boneyard off" : "boneyard on", h.available);
+        else if (command == "boneyard-slowmo") console(std::string("boneyard slowmo ") + (h.slowmo ? "0" : "1"), h.available && h.on);
+        else if (command == "boneyard-stutter") console(std::string("boneyard stutter ") + (h.stutter ? "0" : "1"), h.available && h.on);
+        else console(std::string("boneyard glow ") + (h.glow ? "0" : "1"), h.available && h.on);
     } else if (command == "camera-light") {
         console(s.camera_light.on ? "light off" : "light on", s.camera_light.available);
+    } else if (command.starts_with("camera-light-")) {
+        const auto& light = s.camera_light;
+        const bool usable = light.available && light.on;
+        if (command == "camera-light-gain") {
+            const auto gain = std::to_string(next_light_gain(light.gain));
+            console("light gain " + gain.substr(0, gain.find('.') + 3), usable);
+        } else if (command == "camera-light-color") {
+            // The next named colour; from one set channel by channel, the first.
+            const auto* named = light_color_named(light.color);
+            const auto next = named && named + 1 != light_colors.data() + light_colors.size() ? named + 1 : light_colors.data();
+            console(light_color_command(next->rgb), usable);
+        } else {
+            for (unsigned i = 0; i < light_channel_names.size(); ++i) {
+                if (argument != light_channel_names[i]) continue;
+                auto rgb = light.color;
+                rgb[i] = next_light_channel(rgb[i]);
+                console(light_color_command(rgb), usable);
+            }
+        }
     } else if (command.starts_with("race-")) {
         const auto& d = s.death_race;
         const bool usable = d.available && d.ready;
@@ -326,15 +376,27 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",
             m.offline.board_wear.available && m.offline.board_wear.effective && cb.queue_console_command);
-        // skate 3's bail mini-game: the bones you break. Slow motion and stutter only mean anything with it on.
-        const auto& meat = s.hall_of_meat;
-        text(p.main, "hall-of-meat-title", "HALL OF MEAT");
-        toggle(p.main, "hall-of-meat", "Hall of Meat", meat.on, meat.available && cb.queue_console_command);
-        toggle(p.main, "hall-of-meat-slowmo", "Bail slow motion", meat.slowmo, meat.available && meat.on && cb.queue_console_command);
-        toggle(p.main, "hall-of-meat-stutter", "Bail stutter", meat.stutter, meat.available && meat.on && cb.queue_console_command);
+        // skate 3's bail mini-game: the bones you break. Slow motion, stutter and glow only mean anything with it on.
+        const auto& yard = s.boneyard;
+        text(p.main, "boneyard-title", "BONEYARD");
+        toggle(p.main, "boneyard", "Boneyard", yard.on, yard.available && cb.queue_console_command);
+        toggle(p.main, "boneyard-slowmo", "Bail slow motion", yard.slowmo, yard.available && yard.on && cb.queue_console_command);
+        toggle(p.main, "boneyard-stutter", "Bail stutter", yard.stutter, yard.available && yard.on && cb.queue_console_command);
+        toggle(p.main, "boneyard-glow", "X-ray glow", yard.glow, yard.available && yard.on && cb.queue_console_command);
         // A filmer's lamp on the camera: it lights the skater at night.
         text(p.main, "camera-light-title", "CAMERA LIGHT");
-        toggle(p.main, "camera-light", "Camera light", s.camera_light.on, s.camera_light.available && cb.queue_console_command);
+        const auto& light = s.camera_light;
+        toggle(p.main, "camera-light", "Camera light", light.on, light.available && cb.queue_console_command);
+        // Its brightness and colour, a step a press (they mean something with it on).
+        const bool light_usable = light.available && light.on && cb.queue_console_command;
+        button(p.main, "camera-light-gain", "Light intensity: " + std::to_string(static_cast<int>(light.gain * 100.0f + 0.5f)) + "%",
+            "camera-light-gain", light_usable);
+        const auto* named = light_color_named(light.color);
+        button(p.main, "camera-light-color", std::string("Light color: ") + (named ? named->name : "Custom"), "camera-light-color", light_usable);
+        constexpr std::array<const char*, 3> channel_ids{"camera-light-red", "camera-light-green", "camera-light-blue"};
+        for (unsigned i = 0; i < light_channel_names.size(); ++i)
+            button(p.main, channel_ids[i], std::string(light_channel_names[i]) + ": " + std::to_string(light.color[i]),
+                "camera-light-channel", light_usable, light_channel_names[i]);
         text(p.side, "flight-title", "FREE FLIGHT");
         const auto speed = std::to_string(m.debug.camera_speed);
         button(p.side, "speed", "Flight speed: " + speed.substr(0, speed.find('.') + 2), "speed",

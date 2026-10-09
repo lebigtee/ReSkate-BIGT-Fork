@@ -39,7 +39,7 @@ Library &library() {
     return *value;
 }
 // The head's height above the skater's placement (skeleton joint 1, AITrajectory), composed through
-// the animation skeleton (Extension/HallOfMeat/hall_of_meat_skeleton.h): hips 7, the spine 42-45,
+// the animation skeleton (Extension/Boneyard/boneyard_skeleton.h): hips 7, the spine 42-45,
 // the neck 101-102, the head 103. NaN for a pose of another skeleton.
 float head_height(const Pose &pose) {
     constexpr std::array<std::size_t, 8> chain{7, 42, 43, 44, 45, 101, 102, 103};

@@ -1,9 +1,9 @@
-// Runs the Hall of Meat's slow motion replay (hall_of_meat_replay.cpp) on WARP, Windows' software
+// Runs the Boneyard's slow motion replay (boneyard_replay.cpp) on WARP, Windows' software
 // D3D12 device, and checks the pixels it leaves: a kept picture comes back, scaled and faded, in
 // each supported swapchain format, and nothing is drawn for a picture that was never kept.
-// Build (x64 developer prompt, from Extension/HallOfMeat):
-//   cl /nologo /std:c++20 /EHsc /W4 /O2 /I. Test\replay_test.cpp hall_of_meat_replay.cpp d3d12.lib dxgi.lib
-#include "hall_of_meat_replay.h"
+// Build (x64 developer prompt, from Extension/Boneyard):
+//   cl /nologo /std:c++20 /EHsc /W4 /O2 /I. Test\replay_test.cpp boneyard_replay.cpp d3d12.lib dxgi.lib
+#include "boneyard_replay.h"
 #include <Windows.h>
 #include <dxgi1_4.h>
 #include <cmath>

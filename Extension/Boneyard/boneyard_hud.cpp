@@ -1,6 +1,6 @@
-#include "hall_of_meat_hud.h"
-#include "hall_of_meat.h"
-#include "hall_of_meat_replay.h"
+#include "boneyard_hud.h"
+#include "boneyard.h"
+#include "boneyard_replay.h"
 #include "Extension/UI/Overlay/overlay_internal.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <format>
@@ -17,26 +18,26 @@
 #include <utility>
 #include <vector>
 
-// Presentation thread: reads the Hall of Meat's snapshot (hall_of_meat_view.cpp) and draws skate
+// Presentation thread: reads the Boneyard's snapshot (boneyard_view.cpp) and draws skate
 // 3's X-ray over the skater: a skeleton picture cut into bones, each laid between the skater's
 // own joints, tinted pink, and red where it broke. The skater stays fully visible underneath.
 namespace dingosdk::overlay {
 namespace {
-namespace meat = hall_of_meat;
+namespace yard = boneyard;
 using Clock = std::chrono::steady_clock;
-using meat::Point;
-using meat::Severity;
+using yard::Point;
+using yard::Severity;
 using Microsoft::WRL::ComPtr;
 
 // ---- the pictures --------------------------------------------------------------------------
 // Built into ReSkate.dll (cmake/Runtime.cmake) by Test/build_assets.ps1 from the artist's
 // drawings, and added to ImGui's atlas at startup like the chat emotes:
-//  * HOM_BONES, assets/bones.png: the skeleton from the front, from the back and in profile (the
+//  * BONEYARD_BONES, assets/bones.png: the skeleton from the front, from the back and in profile (the
 //    profile split in two: its arm alone, and the rest without the arm drawn over it), white on a
 //    transparent background for the tint to colour. The X-ray draws the front, with the back's skull
 //    when the skater is seen from behind (the profile looked jumpy as the skater turned). The sprites below are measured on the drawings as drawn (1024 x 1536);
 //    each drawing's crop and place in the sheet maps them onto it.
-//  * HOM_PANEL, assets/panel.png: the result panel's artwork.
+//  * BONEYARD_PANEL, assets/panel.png: the collage of X-rays a strip of which heads the result panel.
 struct Image {
     const wchar_t *resource;
     std::vector<unsigned char> rgba;
@@ -46,7 +47,7 @@ struct Image {
     bool filled{};
 };
 std::array<Image, 2> &images() {
-    static std::array<Image, 2> value{{{L"HOM_BONES"}, {L"HOM_PANEL"}}};
+    static std::array<Image, 2> value{{{L"BONEYARD_BONES"}, {L"BONEYARD_PANEL"}}};
     return value;
 }
 Image &sheet() { return images()[0]; }
@@ -102,23 +103,27 @@ bool decode(std::span<const unsigned char> bytes, std::vector<unsigned char> &pi
     return SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data()));
 }
 
-float dot(const meat::Vec3 &a, const meat::Vec3 &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
-float metres_between(const meat::Vec3 &a, const meat::Vec3 &b) {
-    const meat::Vec3 d{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+float dot(const yard::Vec3 &a, const yard::Vec3 &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+float metres_between(const yard::Vec3 &a, const yard::Vec3 &b) {
+    const yard::Vec3 d{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
     return std::sqrt(dot(d, d));
 }
 float length(ImVec2 v) { return std::sqrt(v.x * v.x + v.y * v.y); }
-meat::Vec3 minus(const meat::Vec3 &a, const meat::Vec3 &b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
-meat::Vec3 cross(const meat::Vec3 &a, const meat::Vec3 &b) {
+yard::Vec3 minus(const yard::Vec3 &a, const yard::Vec3 &b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
+yard::Vec3 cross(const yard::Vec3 &a, const yard::Vec3 &b) {
     return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
-// The camera's pinhole, as the nametags place names: rows right, up, back and position.
+// The camera's pinhole, as the nametags place names: rows right, up, back and position. It works
+// as the game projects, for the picture's own shape; `stretched` then widens a point as the
+// picture is stretched across the window (detail::State::picture_stretch; 1 when it is not).
 struct Projector {
-    meat::Vec3 right{}, up{}, back{}, origin{};
+    yard::Vec3 right{}, up{}, back{}, origin{};
     float focal{};
+    float stretch = 1.0f;
     ImVec2 centre;
-    bool operator()(const meat::Vec3 &point, ImVec2 &out, float &depth) const {
-        const meat::Vec3 delta{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+    ImVec2 stretched(ImVec2 p) const { return ImVec2(centre.x + (p.x - centre.x) * stretch, p.y); }
+    bool operator()(const yard::Vec3 &point, ImVec2 &out, float &depth) const {
+        const yard::Vec3 delta{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
         depth = -dot(delta, back);
         if (depth < 0.1f) return false;
         out = ImVec2(centre.x + dot(delta, right) * focal / depth, centre.y - dot(delta, up) * focal / depth);
@@ -172,43 +177,43 @@ struct Sprite {
 // Measured on the drawings with Test/skeleton_spec.py, which prints these tables. From the front
 // the drawing's left is the skater's right; from the back, their left; the profile faces right.
 constexpr std::array<Sprite, 12> front_sprites{{
-    {meat::right_hip, meat::left_hip, 6, 0, {420, 772}, {604, 772}, 32, 32, 68, 134, Breadth::round, false}, // pelvis
-    {meat::spine1, meat::spine, 5, 0, {512, 530}, {512, 655}, 2, 15, 38, 38, Breadth::round, false}, // lumbar
-    {meat::spine3, meat::spine1, 4, 0, {512, 290}, {512, 515}, 32, 55, 132, 132, Breadth::torso, false}, // ribcage
-    {meat::neck, meat::head, 1, 0, {512, 262}, {512, 202}, 6, 4, 28, 28, Breadth::round, false}, // neck
-    {meat::head, meat::skull, 0, 0, {512, 200}, {512, 116}, 6, 108, 72, 70, Breadth::torso, false}, // skull
-    {meat::right_hip, meat::right_knee, 13, 0, {420, 772}, {426, 1042}, 22, 4, 42, 32, Breadth::round, true}, // femur
-    {meat::right_knee, meat::right_ankle, 15, 0, {425, 1052}, {428, 1384}, 6, 6, 50, 33, Breadth::round, true}, // tibia
-    {meat::right_ankle, meat::right_toes, 17, 0, {428, 1392}, {422, 1465}, 9, 69, 54, 49, Breadth::round, true}, // foot
-    {meat::right_clavicle, meat::right_shoulder, 2, 0, {468, 296}, {348, 293}, 4, 16, 15, 14, Breadth::round, true}, // clavicle
-    {meat::right_shoulder, meat::right_elbow, 7, 0, {340, 322}, {272, 558}, 20, 10, 30, 30, Breadth::round, true}, // humerus
-    {meat::right_elbow, meat::right_wrist, 9, 0, {270, 572}, {212, 740}, 6, 2, 30, 22, Breadth::round, true}, // forearm
-    {meat::right_wrist, meat::right_knuckles, 11, 0, {197, 760}, {178, 812}, 6, 102, 68, 64, Breadth::round, true}, // hand
+    {yard::right_hip, yard::left_hip, 6, 0, {420, 772}, {604, 772}, 32, 32, 68, 134, Breadth::round, false}, // pelvis
+    {yard::spine1, yard::spine, 5, 0, {512, 530}, {512, 655}, 2, 15, 38, 38, Breadth::round, false}, // lumbar
+    {yard::spine3, yard::spine1, 4, 0, {512, 290}, {512, 515}, 32, 55, 132, 132, Breadth::torso, false}, // ribcage
+    {yard::neck, yard::head, 1, 0, {512, 262}, {512, 202}, 6, 4, 28, 28, Breadth::round, false}, // neck
+    {yard::head, yard::skull, 0, 0, {512, 200}, {512, 116}, 6, 108, 72, 70, Breadth::torso, false}, // skull
+    {yard::right_hip, yard::right_knee, 13, 0, {420, 772}, {426, 1042}, 22, 4, 42, 32, Breadth::round, true}, // femur
+    {yard::right_knee, yard::right_ankle, 15, 0, {425, 1052}, {428, 1384}, 6, 6, 50, 33, Breadth::round, true}, // tibia
+    {yard::right_ankle, yard::right_toes, 17, 0, {428, 1392}, {422, 1465}, 9, 69, 54, 49, Breadth::round, true}, // foot
+    {yard::right_clavicle, yard::right_shoulder, 2, 0, {468, 296}, {348, 293}, 4, 16, 15, 14, Breadth::round, true}, // clavicle
+    {yard::right_shoulder, yard::right_elbow, 7, 0, {340, 322}, {272, 558}, 20, 10, 30, 30, Breadth::round, true}, // humerus
+    {yard::right_elbow, yard::right_wrist, 9, 0, {270, 572}, {212, 740}, 6, 2, 30, 22, Breadth::round, true}, // forearm
+    {yard::right_wrist, yard::right_knuckles, 11, 0, {197, 760}, {178, 812}, 6, 102, 68, 64, Breadth::round, true}, // hand
 }};
 // From behind, the body keeps the front drawing (the skater's own joints turn it); only the skull
 // becomes the back of the head, so a skater seen from behind does not show a face.
-constexpr Sprite back_skull{meat::head, meat::skull, 0, 1, {512, 175}, {512, 91}, 5, 67, 70, 70, Breadth::torso, false};
+constexpr Sprite back_skull{yard::head, yard::skull, 0, 1, {512, 175}, {512, 91}, 5, 67, 70, 70, Breadth::torso, false};
 // The other side's point or bone.
 Point other_side(Point p) {
     switch (p) {
-    case meat::right_clavicle: return meat::left_clavicle;
-    case meat::right_shoulder: return meat::left_shoulder;
-    case meat::right_elbow: return meat::left_elbow;
-    case meat::right_wrist: return meat::left_wrist;
-    case meat::right_knuckles: return meat::left_knuckles;
-    case meat::right_hip: return meat::left_hip;
-    case meat::right_knee: return meat::left_knee;
-    case meat::right_ankle: return meat::left_ankle;
-    case meat::right_toes: return meat::left_toes;
-    case meat::left_clavicle: return meat::right_clavicle;
-    case meat::left_shoulder: return meat::right_shoulder;
-    case meat::left_elbow: return meat::right_elbow;
-    case meat::left_wrist: return meat::right_wrist;
-    case meat::left_knuckles: return meat::right_knuckles;
-    case meat::left_hip: return meat::right_hip;
-    case meat::left_knee: return meat::right_knee;
-    case meat::left_ankle: return meat::right_ankle;
-    case meat::left_toes: return meat::right_toes;
+    case yard::right_clavicle: return yard::left_clavicle;
+    case yard::right_shoulder: return yard::left_shoulder;
+    case yard::right_elbow: return yard::left_elbow;
+    case yard::right_wrist: return yard::left_wrist;
+    case yard::right_knuckles: return yard::left_knuckles;
+    case yard::right_hip: return yard::left_hip;
+    case yard::right_knee: return yard::left_knee;
+    case yard::right_ankle: return yard::left_ankle;
+    case yard::right_toes: return yard::left_toes;
+    case yard::left_clavicle: return yard::right_clavicle;
+    case yard::left_shoulder: return yard::right_shoulder;
+    case yard::left_elbow: return yard::right_elbow;
+    case yard::left_wrist: return yard::right_wrist;
+    case yard::left_knuckles: return yard::right_knuckles;
+    case yard::left_hip: return yard::right_hip;
+    case yard::left_knee: return yard::right_knee;
+    case yard::left_ankle: return yard::right_ankle;
+    case yard::left_toes: return yard::right_toes;
     default: return p;
     }
 }
@@ -246,18 +251,18 @@ const std::vector<Sprite> &front() {
 // does not flicker as the skater turns side-on). Which way cross(spine, shoulders) points, out of
 // the chest or out of the back, is the engine's handedness: learned whenever front and back are
 // plain to see, from which way the shoulders run on screen against the spine.
-bool seen_from_behind(const meat::View &view, const Projector &project, float torso_breadth) {
+bool seen_from_behind(const yard::View &view, const Projector &project, float torso_breadth) {
     static bool behind{};
     static float chest_sign = 0.0f;
     ImVec2 hips_at, top_at, right_at, left_at;
     float depth{};
-    if (!project(view.points[meat::hips], hips_at, depth) || !project(view.points[meat::spine3], top_at, depth) ||
-        !project(view.points[meat::right_shoulder], right_at, depth) || !project(view.points[meat::left_shoulder], left_at, depth))
+    if (!project(view.points[yard::hips], hips_at, depth) || !project(view.points[yard::spine3], top_at, depth) ||
+        !project(view.points[yard::right_shoulder], right_at, depth) || !project(view.points[yard::left_shoulder], left_at, depth))
         return behind;
     const ImVec2 up(top_at.x - hips_at.x, top_at.y - hips_at.y), across(right_at.x - left_at.x, right_at.y - left_at.y);
     const float turn = up.x * across.y - up.y * across.x; // below 0: the chest faces the camera
-    const auto &hips = view.points[meat::hips];
-    const auto chest = cross(minus(view.points[meat::spine3], hips), minus(view.points[meat::right_shoulder], view.points[meat::left_shoulder]));
+    const auto &hips = view.points[yard::hips];
+    const auto chest = cross(minus(view.points[yard::spine3], hips), minus(view.points[yard::right_shoulder], view.points[yard::left_shoulder]));
     const auto camera = minus(project.origin, hips);
     if (torso_breadth > 0.6f) chest_sign = (turn < 0) == (dot(chest, camera) > 0) ? 1.0f : -1.0f;
     const float size = std::sqrt(dot(chest, chest) * dot(camera, camera));
@@ -273,19 +278,28 @@ bool seen_from_behind(const meat::View &view, const Projector &project, float to
 // When each bone broke, for the flash it gets. Per bail.
 struct Flashes {
     std::uint64_t serial{};
-    std::array<Severity, meat::bone_count> shown{};
-    std::array<double, meat::bone_count> at{};
+    std::array<Severity, yard::bone_count> shown{};
+    std::array<double, yard::bone_count> at{};
     double results_from{};
-    meat::Phase phase{};
+    yard::Phase phase{};
 };
 Flashes &flashes() {
     static Flashes value;
     return value;
 }
 
-// One sprite's corners on screen, and on the sheet. False when it is behind the camera.
-bool place(const Sprite &sprite, const meat::View &view, const Projector &project, float torso_breadth,
-           std::array<ImVec2, 4> &screen, std::array<ImVec2, 4> &sheet_points, ImVec2 &middle, float &thickness) {
+// One sprite's corners on screen, and on the sheet, its two ends and its breadth on screen. False
+// when it is behind the camera.
+struct Placed {
+    std::array<ImVec2, 4> screen, sheet_points;
+    ImVec2 middle, from, to;
+    float thickness{}, breadth{};
+    Severity severity{};
+    std::size_t bone{};
+};
+bool place(const Sprite &sprite, const yard::View &view, const Projector &project, float torso_breadth,
+           std::array<ImVec2, 4> &screen, std::array<ImVec2, 4> &sheet_points, ImVec2 &middle, float &thickness, ImVec2 &from,
+           ImVec2 &to, float &breadth) {
     ImVec2 a, b;
     float depth_a{}, depth_b{};
     if (!project(view.points[sprite.from], a, depth_a) || !project(view.points[sprite.to], b, depth_b)) return false;
@@ -312,11 +326,63 @@ bool place(const Sprite &sprite, const meat::View &view, const Projector &projec
     }
     middle = ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
     thickness = std::clamp(across * 30.0f, 1.5f, 14.0f);
+    from = a;
+    to = b;
+    breadth = (sprite.left + sprite.right) * across;
+    // Laid out in the picture's shape, then stretched as the picture is across the window.
+    for (auto &corner : screen) corner = project.stretched(corner);
+    middle = project.stretched(middle);
+    from = project.stretched(from);
+    to = project.stretched(to);
     return true;
 }
 
-void draw_xray(ImDrawList *draw, const meat::View &view, const Projector &project, double now, float fade) {
-    using namespace meat;
+// A bone as something round: lit down its middle, a little off centre, and darker towards its
+// edges, the way a bone's own thickness shows on a film. The sprite is cut lengthwise into strips
+// whose corners each get their own shade.
+void draw_rounded(ImDrawList *draw, ImTextureID texture, const std::array<ImVec2, 4> &screen, const std::array<ImVec2, 4> &uv,
+                  Severity severity, float alpha) {
+    // Across the bone from one edge (corners 0 and 1) to the other (3 and 2), and the light there.
+    constexpr std::array<float, 5> across{0.0f, 0.22f, 0.45f, 0.75f, 1.0f};
+    constexpr std::array<float, 5> light{0.38f, 0.84f, 1.0f, 0.74f, 0.34f};
+    const auto rgb = severity_rgb(severity);
+    draw->PushTextureID(texture);
+    draw->PrimReserve(static_cast<int>((across.size() - 1) * 6), static_cast<int>(across.size() * 2));
+    const auto base = draw->_VtxCurrentIdx;
+    for (std::size_t i = 0; i < across.size(); ++i) {
+        const float t = across[i];
+        const auto mix = [t](ImVec2 a, ImVec2 b) { return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t); };
+        const auto shaded = [&](int c) { return static_cast<int>(static_cast<float>(c) * (0.45f + 0.55f * light[i])); };
+        const ImU32 colour = rgba(shaded(rgb[0]), shaded(rgb[1]), shaded(rgb[2]), alpha * (0.6f + 0.4f * light[i]));
+        draw->PrimWriteVtx(mix(screen[0], screen[3]), mix(uv[0], uv[3]), colour);
+        draw->PrimWriteVtx(mix(screen[1], screen[2]), mix(uv[1], uv[2]), colour);
+    }
+    for (std::size_t i = 0; i + 1 < across.size(); ++i) {
+        const auto a = static_cast<ImDrawIdx>(base + i * 2), b = static_cast<ImDrawIdx>(a + 1), c = static_cast<ImDrawIdx>(a + 2),
+                   d = static_cast<ImDrawIdx>(a + 3);
+        for (const auto index : {a, b, d, a, d, c}) draw->PrimWriteIdx(index);
+    }
+    draw->PopTextureID();
+}
+
+// The glow of a lit film round a bone: soft layers wider than it, blue-white, or the colour of
+// its break.
+void draw_glow(ImDrawList *draw, const Placed &p, float fade) {
+    auto rgb = yard::broken(p.severity) ? severity_rgb(p.severity) : std::array<int, 3>{120, 190, 255};
+    if (yard::broken(p.severity))
+        for (auto &c : rgb) c += (255 - c) / 4;
+    constexpr std::array<std::pair<float, float>, 3> layers{{{2.0f, 0.05f}, {1.45f, 0.08f}, {1.1f, 0.11f}}}; // width, alpha
+    for (const auto &[wide, strength] : layers) {
+        const float w = std::max(p.breadth * wide, 2.0f);
+        const ImU32 colour = rgba(rgb[0], rgb[1], rgb[2], strength * fade);
+        draw->AddLine(p.from, p.to, colour, w);
+        draw->AddCircleFilled(p.from, w * 0.5f, colour, 16);
+        draw->AddCircleFilled(p.to, w * 0.5f, colour, 16);
+    }
+}
+
+void draw_xray(ImDrawList *draw, const yard::View &view, const Projector &project, double now, float fade) {
+    using namespace yard;
     const auto &s = sheet();
     ImVec2 uv0, uv1;
     if (!atlas_uv(s, uv0, uv1)) return;
@@ -337,22 +403,29 @@ void draw_xray(ImDrawList *draw, const meat::View &view, const Projector &projec
     const auto &sprites = front();
     auto &f = flashes();
     const float pulse = 0.78f + 0.22f * static_cast<float>(std::sin(now * 9.0));
+    std::vector<Placed> placed;
+    placed.reserve(sprites.size());
     for (std::size_t i = 0; i < sprites.size(); ++i) {
         const auto &sprite = behind && i == skull_sprite ? back_skull : sprites[i];
-        std::array<ImVec2, 4> screen, sheet_points;
-        ImVec2 middle;
-        float thick{};
-        if (!place(sprite, view, project, torso_breadth, screen, sheet_points, middle, thick)) continue;
-        const auto severity = view.severity[sprite.bone];
-        const float alpha = (broken(severity) ? 0.95f * pulse : 0.72f) * fade;
-        draw->AddImageQuad(s.atlas->TexID, screen[0], screen[1], screen[2], screen[3], uv(sheet_points[0]), uv(sheet_points[1]),
-                           uv(sheet_points[2]), uv(sheet_points[3]), colour(severity, alpha));
-        if (!broken(severity)) continue;
+        Placed p;
+        if (!place(sprite, view, project, torso_breadth, p.screen, p.sheet_points, p.middle, p.thickness, p.from, p.to, p.breadth)) continue;
+        p.bone = sprite.bone;
+        p.severity = view.severity[sprite.bone];
+        placed.push_back(p);
+    }
+    // The glow first, under every bone, so the bones read clean over it.
+    if (view.glow)
+        for (const auto &p : placed) draw_glow(draw, p, fade);
+    for (const auto &p : placed) {
+        const float alpha = (broken(p.severity) ? 0.95f * pulse : 0.72f) * fade;
+        const std::array<ImVec2, 4> corners_uv{uv(p.sheet_points[0]), uv(p.sheet_points[1]), uv(p.sheet_points[2]), uv(p.sheet_points[3])};
+        draw_rounded(draw, s.atlas->TexID, p.screen, corners_uv, p.severity, alpha);
+        if (!broken(p.severity)) continue;
         // A ring bursting out as it breaks.
-        const float age = static_cast<float>(now - f.at[sprite.bone]);
-        if (f.at[sprite.bone] > 0 && age < 0.45f) {
+        const float age = static_cast<float>(now - f.at[p.bone]);
+        if (f.at[p.bone] > 0 && age < 0.45f) {
             const float t = age / 0.45f;
-            draw->AddCircle(middle, thick * (2.0f + 10.0f * t), colour(severity, (1.0f - t) * fade), 20, thick * 0.5f);
+            draw->AddCircle(p.middle, p.thickness * (2.0f + 10.0f * t), colour(p.severity, (1.0f - t) * fade), 20, p.thickness * 0.5f);
         }
     }
 }
@@ -379,7 +452,7 @@ void draw_bands(ImDrawList *draw, const std::vector<Ring> &rings) {
         }
 }
 
-// skate 3's red Hall of Meat screen: a faint red over everything, deepening towards the edges and
+// skate 3's red Boneyard screen: a faint red over everything, deepening towards the edges and
 // most in the corners. Elliptic rings around the centre, the last one past the corners.
 void draw_vignette(ImDrawList *draw, const ImVec2 &display, float alpha) {
     if (alpha <= 0) return;
@@ -411,77 +484,28 @@ float noise(std::uint64_t seed, std::uint32_t key) {
     return static_cast<float>(h >> 40) / 16777216.0f;
 }
 
-// Text that reads over any picture: a dark edge all round, then the colour.
-void outlined(ImDrawList *draw, ImFont *font, float size, ImVec2 at, ImU32 fill, float alpha, const std::string &value) {
-    const ImU32 edge = rgba(2, 8, 20, 0.9f * alpha);
-    const float o = std::max(1.0f, size * 0.07f);
-    const std::array<ImVec2, 8> around{{{-o, 0}, {o, 0}, {0, -o}, {0, o}, {-o, -o}, {o, -o}, {-o, o}, {o, o}}};
-    for (const auto &d : around) draw->AddText(font, size, ImVec2(at.x + d.x, at.y + d.y), edge, value.c_str());
-    draw->AddText(font, size, at, fill, value.c_str());
-}
-
-// The result over the artist's panel (assets/panel.png), bottom right, the size of its artwork
-// for the fullest result: the title, the count big, then each bone over its severity, on soft dark
-// plates so the X-rays behind stay seen. False when the artwork is not there.
-bool draw_panel_art(ImDrawList *draw, const meat::View &view, const ImVec2 &display, float scale, float alpha,
-                    const std::vector<std::size_t> &broken_bones, const std::string &count_label, const std::string &numbers) {
-    using namespace meat;
-    const auto &art = panel_art();
-    ImVec2 uv0, uv1;
-    if (!art.height || !atlas_uv(art, uv0, uv1)) return false;
-    auto &s = detail::state();
-    ImFont *title_font = s.menu.title ? s.menu.title : ImGui::GetFont();
-    ImFont *bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
-    ImFont *body = s.menu.body ? s.menu.body : ImGui::GetFont();
-    const float panel_width = 300.0f * scale, panel_height = panel_width * static_cast<float>(art.height) / static_cast<float>(art.width);
-    const ImVec2 end(std::max(display.x - display.y * 0.09f, panel_width + 16.0f * scale), display.y * 0.955f);
-    const ImVec2 origin(end.x - panel_width, end.y - panel_height);
-    draw->AddImage(art.atlas->TexID, origin, end, uv0, uv1, rgba(255, 255, 255, alpha));
-
-    constexpr std::size_t most = 5;
-    const float inset = 24.0f * scale, gap = 4.0f * scale, inner = panel_width - inset * 2;
-    const float title_size = std::min(34.0f * scale, inner / std::max(width(title_font, 1.0f, "HALL OF MEAT"), 0.01f));
-    const float count_size = 52.0f * scale, label_size = 15.0f * scale, detail_size = 14.0f * scale;
-    const float name_size = 15.0f * scale, severity_size = 13.0f * scale, row_height = name_size + severity_size + 7.0f * scale;
-    const std::size_t rows = std::min(broken_bones.size(), most);
-    const bool more = broken_bones.size() > most;
-    const ImU32 plate = rgba(2, 8, 22, 0.42f * alpha);
-    float y = origin.y + inset;
-    // The heading on its plate.
-    const float heading = title_size * 0.95f + gap + count_size + label_size + gap * 2 + detail_size;
-    draw->AddRectFilled(ImVec2(origin.x + inset - 8.0f * scale, y - 6.0f * scale), ImVec2(end.x - inset + 8.0f * scale, y + heading + 6.0f * scale),
-                        plate, 6.0f * scale);
-    const auto centred = [&](ImFont *font, float size, const std::string &value, ImU32 fill, float advance) {
-        outlined(draw, font, size, ImVec2(origin.x + (panel_width - width(font, size, value)) * 0.5f, y), fill, alpha, value);
-        y += advance;
-    };
-    centred(title_font, title_size, "HALL OF MEAT", rgba(242, 248, 255, alpha), title_size * 0.95f + gap);
-    centred(title_font, count_size, std::to_string(broken_bones.size()), rgba(242, 248, 255, alpha), count_size);
-    centred(bold, label_size, count_label, rgba(150, 210, 255, alpha), label_size + gap * 2);
-    centred(body, detail_size, numbers, rgba(190, 215, 240, alpha), detail_size);
-    if (!rows) return true;
-    // The bones on theirs.
-    y += gap * 4;
-    const float list = rows * row_height + (more ? name_size + gap : 0.0f);
-    draw->AddRectFilled(ImVec2(origin.x + inset - 8.0f * scale, y - 6.0f * scale), ImVec2(end.x - inset + 8.0f * scale, y + list + 4.0f * scale),
-                        plate, 6.0f * scale);
-    for (std::size_t i = 0; i < rows; ++i) {
-        const auto k = broken_bones[i];
-        draw->AddRectFilled(ImVec2(origin.x + inset, y + scale), ImVec2(origin.x + inset + 3.0f * scale, y + name_size + severity_size),
-                            lifted(view.severity[k], 0.95f * alpha));
-        outlined(draw, body, name_size, ImVec2(origin.x + inset + 9.0f * scale, y), rgba(236, 244, 252, alpha), alpha, bones[k].name);
-        outlined(draw, bold, severity_size, ImVec2(origin.x + inset + 9.0f * scale, y + name_size + scale), lifted(view.severity[k], alpha), alpha,
-                 severity_name(view.severity[k]));
-        y += row_height;
+// A severity as the film labels it, short enough to sit beside the longest bone name.
+const char *severity_tag(Severity severity) {
+    switch (severity) {
+    case Severity::crack: return "CRACKED";
+    case Severity::fracture: return "FRACTURED";
+    case Severity::open: return "COMPOUND";
+    case Severity::shattered: return "SHATTERED";
+    default: return "INTACT";
     }
-    if (more)
-        outlined(draw, body, name_size, ImVec2(origin.x + inset + 9.0f * scale, y), rgba(170, 200, 230, alpha), alpha,
-                 std::format("+ {} more", broken_bones.size() - most));
-    return true;
+}
+std::string upper(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    return value;
 }
 
-void draw_result(ImDrawList *draw, const meat::View &view, const ImVec2 &display, float scale, float alpha) {
-    using namespace meat;
+// The result: a radiograph's film in the bottom right corner, as far in from the right and as high
+// as the game's own score is from the left (the game lays its HUD out by the picture's height).
+// Dark and plain, labelled as a hospital labels its films: a strip of the artist's X-ray collage
+// at the top, the name, the count, how fast and how far, each bone with its break, and whose film
+// it is. Grain, faint scan lines and a border worn through in places keep it rough.
+void draw_result(ImDrawList *draw, const yard::View &view, const ImVec2 &display, float scale, float alpha) {
+    using namespace yard;
     auto &s = detail::state();
     ImFont *title_font = s.menu.title ? s.menu.title : ImGui::GetFont();
     ImFont *bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
@@ -492,155 +516,107 @@ void draw_result(ImDrawList *draw, const meat::View &view, const ImVec2 &display
     std::sort(broken_bones.begin(), broken_bones.end(), [&](std::size_t a, std::size_t b) {
         return view.severity[a] != view.severity[b] ? view.severity[a] > view.severity[b] : view.impact[a] > view.impact[b];
     });
-    const std::string count = std::to_string(broken_bones.size());
-    const std::string count_label = broken_bones.size() == 1 ? "BROKEN BONE" : "BROKEN BONES";
-    std::string detail = std::format("{:.0f} km/h", view.speed * 3.6f);
-    if (view.drop > 0) detail += std::format("  \xC2\xB7  {:.1f} m fall", view.drop);
-    if (draw_panel_art(draw, view, display, scale, alpha, broken_bones, count_label, detail)) return;
+    std::string stats = std::format("{:.0f} KM/H", view.speed * 3.6f);
+    if (view.drop > 0) stats += std::format("  \xC2\xB7  DROP {:.1f} M", view.drop);
+    const auto &name = s.model.multiplayer.local_name;
+    const std::string patient = "PATIENT: " + (name.empty() ? std::string("JOHN DOE") : upper(name));
 
-    // Without the artwork: a narrow film in the bottom right corner, as far in from the right and as high as the game's
-    // own score is from the left (the game lays its HUD out by the picture's height). The title
-    // stacked, the count big, then each bone over its severity.
     constexpr std::size_t most = 5;
-    const float panel_width = 250.0f * scale, pad = 14.0f * scale, gap = 4.0f * scale, inner = panel_width - pad * 2;
-    const float title_size = std::min(44.0f * scale, inner / std::max(width(title_font, 1.0f, "HALL OF"), 0.01f));
-    const float count_size = 58.0f * scale, label_size = 16.0f * scale, detail_size = 15.0f * scale;
-    const float name_size = 16.0f * scale, severity_size = 14.0f * scale, row_height = name_size + severity_size + 8.0f * scale;
+    const float panel_width = 300.0f * scale, pad = 16.0f * scale, gap = 4.0f * scale, inner = panel_width - pad * 2;
+    const float header_size = 12.0f * scale, title_size = std::min(38.0f * scale, inner / std::max(width(title_font, 1.0f, "BONEYARD"), 0.01f));
+    const float count_size = 50.0f * scale, label_size = 13.0f * scale, stats_size = 13.0f * scale;
+    const float row_size = 15.0f * scale, tag_size = 12.0f * scale, row_height = row_size + 6.0f * scale, footer_size = 12.0f * scale;
     const std::size_t rows = std::min(broken_bones.size(), most);
     const bool more = broken_bones.size() > most;
-    const float panel_height = pad * 2 + title_size * 1.9f + gap + count_size + label_size + gap * 2 + detail_size +
-                               (rows ? gap * 4 + rows * row_height + (more ? name_size + gap : 0.0f) : 0.0f);
+    // The strip of the collage, as wide as the text, cut from the collage's skull and hand.
+    const auto &art = panel_art();
+    ImVec2 art_uv0, art_uv1;
+    const bool strip = art.height && atlas_uv(art, art_uv0, art_uv1);
+    const float strip_height = strip ? 62.0f * scale : 0.0f;
+    const float panel_height = pad + header_size + gap * 2 + (strip ? strip_height + gap * 3 : 0.0f) + title_size + gap + count_size + gap +
+                               stats_size + gap * 4 + std::max<std::size_t>(rows + (more ? 1 : 0), 1) * row_height + gap * 3 + footer_size + pad;
     const ImVec2 end(std::max(display.x - display.y * 0.09f, panel_width + 16.0f * scale), display.y * 0.955f);
     const ImVec2 origin(end.x - panel_width, end.y - panel_height);
     const std::uint64_t seed = view.serial + 1;
     const auto wear = [&](std::uint32_t key) { return noise(seed, key); };
-    const float most_height = 700.0f * scale; // the wear is laid out this high, and shows as far as the panel goes
+    const float left = origin.x + pad, right = end.x - pad;
 
-    // The film's edge: a little ragged, its corners chipped.
-    std::vector<ImVec2> outline;
-    {
-        float chip[4];
-        for (std::uint32_t c = 0; c < 4; ++c) chip[c] = (3.0f + 7.0f * wear(c)) * scale;
-        const float step = 14.0f * scale, rag = 2.5f * scale;
-        // Along the top and the bottom, from the left; up the sides, from the bottom.
-        const auto across = [&](float y, float inward, bool rightwards, std::uint32_t key, float left_chip, float right_chip) {
-            const float left = origin.x + left_chip, right = end.x - right_chip;
-            const int steps = std::max(2, static_cast<int>((right - left) / step));
-            for (int i = 0; i <= steps; ++i) {
-                const int k = rightwards ? i : steps - i;
-                const float in = k == 0 || k == steps ? 0.0f : rag * wear(key + static_cast<std::uint32_t>(k));
-                outline.emplace_back(left + (right - left) * static_cast<float>(k) / static_cast<float>(steps), y + inward * in);
-            }
-        };
-        const auto upright = [&](float x, float inward, bool downwards, std::uint32_t key, float top_chip, float bottom_chip) {
-            const float bottom = end.y - bottom_chip, top = origin.y + top_chip;
-            std::vector<ImVec2> side{ImVec2(x, bottom)};
-            for (int k = 1; bottom - k * step > top + step * 0.5f; ++k)
-                side.emplace_back(x + inward * rag * wear(key + static_cast<std::uint32_t>(k)), bottom - k * step);
-            side.emplace_back(x, top);
-            if (downwards) std::reverse(side.begin(), side.end());
-            outline.insert(outline.end(), side.begin(), side.end());
-        };
-        across(origin.y, 1.0f, true, 100, chip[0], chip[1]);
-        upright(end.x, -1.0f, true, 300, chip[1], chip[2]);
-        across(end.y, -1.0f, false, 500, chip[3], chip[2]);
-        upright(origin.x, 1.0f, false, 700, chip[0], chip[3]);
-    }
-    // An X-ray film on a lightbox: deep blue, lit from behind in the middle, darker at the top and
-    // bottom, burnt at the edges.
-    const ImVec2 middle((origin.x + end.x) * 0.5f, (origin.y + end.y) * 0.5f);
-    const float burn = 16.0f * scale, half_w = panel_width * 0.5f, half_h = panel_height * 0.5f;
-    const auto film = [&](ImVec2 at, float light) {
-        const float t = std::clamp((at.y - origin.y) / panel_height, 0.0f, 1.0f);
-        const auto channel = [&](float top, float bottom) { return std::clamp(static_cast<int>((top + (bottom - top) * t) * light), 0, 255); };
-        return rgba(channel(30, 8), channel(70, 22), channel(118, 48), (0.86f + 0.06f * t) * alpha);
-    };
-    {
-        Ring centre, lit, edge;
-        for (const auto &p : outline) {
-            const ImVec2 in(middle.x + (p.x - middle.x) * (half_w - burn) / half_w, middle.y + (p.y - middle.y) * (half_h - burn) / half_h);
-            centre.push_back({middle, film(middle, 1.3f)});
-            lit.push_back({in, film(in, 1.0f)});
-            edge.push_back({p, film(p, 0.5f)});
-        }
-        draw_bands(draw, {centre, lit, edge});
-    }
-    // Stains: blotches lighter and darker.
-    for (std::uint32_t k = 0; k < 14; ++k) {
-        const float r = (12.0f + 30.0f * wear(1000 + k * 4)) * scale;
-        const ImVec2 at(origin.x + r + (panel_width - 2 * r) * wear(1001 + k * 4), end.y - r - most_height * wear(1002 + k * 4));
-        if (at.y - r < origin.y + 2.0f * scale) continue;
-        const bool dark = wear(1003 + k * 4) < 0.6f;
-        draw->AddCircleFilled(at, r, dark ? rgba(0, 4, 14, 0.12f * alpha) : rgba(130, 180, 230, 0.06f * alpha), 24);
-    }
-    // A crease across the film.
-    {
-        const float from = 0.25f + 0.5f * wear(1100), to = 0.25f + 0.5f * wear(1101);
-        const ImVec2 a(origin.x + 3.0f * scale, end.y - std::min(from * most_height * 0.5f, panel_height - 6.0f * scale));
-        const ImVec2 b(end.x - 3.0f * scale, end.y - std::min(to * most_height * 0.5f, panel_height - 6.0f * scale));
-        draw->AddLine(a, b, rgba(170, 210, 245, 0.10f * alpha), std::max(1.0f, scale));
-        draw->AddLine(ImVec2(a.x, a.y + scale), ImVec2(b.x, b.y + scale), rgba(0, 0, 0, 0.22f * alpha), std::max(1.0f, scale));
-    }
+    // The film: near black blue, faint scan lines across it.
+    draw->AddRectFilled(origin, end, rgba(11, 22, 34, 0.92f * alpha));
+    for (float y = origin.y + 2.0f * scale; y < end.y; y += 3.0f * scale)
+        draw->AddLine(ImVec2(origin.x, y), ImVec2(end.x, y), rgba(120, 190, 255, 0.035f * alpha), std::max(1.0f, 0.6f * scale));
 
-    // The text, centred and then down the left.
-    const auto shadow = rgba(0, 8, 24, 0.8f * alpha);
+    const ImU32 shadow = rgba(0, 4, 12, 0.7f * alpha), cyan = rgba(111, 182, 230, alpha);
     float y = origin.y + pad;
-    const auto centred = [&](ImFont *font, float size, const std::string &value, ImU32 fill, float advance, bool ghost = false) {
-        const ImVec2 at(origin.x + (panel_width - width(font, size, value)) * 0.5f, y);
-        // A print slightly out of register, as worn film labels are.
-        if (ghost) draw->AddText(font, size, ImVec2(at.x + 1.5f * scale, at.y + 0.5f * scale), rgba(90, 170, 255, 0.35f * alpha), value.c_str());
-        text(draw, font, size, at, fill, shadow, value);
-        y += advance;
-    };
-    centred(title_font, title_size, "HALL OF", rgba(242, 248, 255, alpha), title_size * 0.95f, true);
-    centred(title_font, title_size, "MEAT", rgba(242, 248, 255, alpha), title_size * 0.95f + gap, true);
-    centred(title_font, count_size, count, rgba(242, 248, 255, alpha), count_size, true);
-    centred(bold, label_size, count_label, rgba(140, 205, 255, alpha), label_size + gap * 2);
-    centred(body, detail_size, detail, rgba(178, 205, 232, alpha), detail_size + gap);
-    if (rows) {
-        y += gap;
-        draw->AddLine(ImVec2(origin.x + pad, y), ImVec2(end.x - pad, y), rgba(140, 190, 235, 0.45f * alpha), std::max(1.0f, scale));
-        y += gap * 2;
-        for (std::size_t i = 0; i < rows; ++i) {
-            const auto k = broken_bones[i];
-            // A mark in the severity's colour beside the bone's name and, under it, the severity.
-            draw->AddRectFilled(ImVec2(origin.x + pad, y + scale), ImVec2(origin.x + pad + 3.0f * scale, y + name_size + severity_size),
-                                lifted(view.severity[k], 0.9f * alpha));
-            text(draw, body, name_size, ImVec2(origin.x + pad + 9.0f * scale, y), rgba(232, 242, 252, alpha), shadow, bones[k].name);
-            text(draw, bold, severity_size, ImVec2(origin.x + pad + 9.0f * scale, y + name_size + scale), lifted(view.severity[k], alpha), shadow,
-                 severity_name(view.severity[k]));
-            y += row_height;
-        }
-        if (more)
-            text(draw, body, name_size, ImVec2(origin.x + pad + 9.0f * scale, y), rgba(160, 192, 224, alpha), shadow,
-                 std::format("+ {} more", broken_bones.size() - most));
+    // The film's label.
+    text(draw, bold, header_size, ImVec2(left, y), cyan, shadow, "RADIOGRAPH");
+    const auto bail = std::format("BAIL #{}", view.serial);
+    text(draw, bold, header_size, ImVec2(right - width(bold, header_size, bail), y), cyan, shadow, bail);
+    y += header_size + gap * 2;
+    if (strip) {
+        const float v_span = std::min(1.0f, (strip_height / inner) * (static_cast<float>(art.width) / static_cast<float>(art.height)));
+        const float v_from = 0.30f * (1.0f - v_span);
+        const ImVec2 uv0(art_uv0.x, art_uv0.y + (art_uv1.y - art_uv0.y) * v_from);
+        const ImVec2 uv1(art_uv1.x, art_uv0.y + (art_uv1.y - art_uv0.y) * (v_from + v_span));
+        draw->AddImage(art.atlas->TexID, ImVec2(left, y), ImVec2(right, y + strip_height), uv0, uv1, rgba(255, 255, 255, 0.9f * alpha));
+        draw->AddRect(ImVec2(left, y), ImVec2(right, y + strip_height), rgba(31, 78, 110, alpha), 0.0f, 0, std::max(1.0f, scale));
+        y += strip_height + gap * 3;
     }
+    // The name, printed a little out of register as worn film labels are.
+    draw->AddText(title_font, title_size, ImVec2(left + 1.5f * scale, y + 0.5f * scale), rgba(90, 170, 255, 0.35f * alpha), "BONEYARD");
+    text(draw, title_font, title_size, ImVec2(left, y), rgba(216, 238, 255, alpha), shadow, "BONEYARD");
+    y += title_size + gap;
+    // The count, big, and what it counts beside it.
+    const auto count = std::to_string(broken_bones.size());
+    text(draw, title_font, count_size, ImVec2(left, y), rgba(216, 238, 255, alpha), shadow, count);
+    text(draw, bold, label_size, ImVec2(left + width(title_font, count_size, count) + 8.0f * scale, y + count_size * 0.58f), cyan, shadow,
+         broken_bones.size() == 1 ? "BROKEN BONE" : "BROKEN BONES");
+    y += count_size + gap;
+    text(draw, body, stats_size, ImVec2(left, y), rgba(156, 201, 232, alpha), shadow, stats);
+    y += stats_size + gap * 2;
+    draw->AddLine(ImVec2(left, y), ImVec2(right, y), rgba(31, 78, 110, alpha), std::max(1.0f, scale));
+    y += gap * 2;
+    // Each bone, its break on the right.
+    for (std::size_t i = 0; i < rows; ++i) {
+        const auto k = broken_bones[i];
+        text(draw, body, row_size, ImVec2(left, y), rgba(226, 240, 252, alpha), shadow, bones[k].name);
+        const char *tag = severity_tag(view.severity[k]);
+        text(draw, bold, tag_size, ImVec2(right - width(bold, tag_size, tag), y + (row_size - tag_size) * 0.6f), lifted(view.severity[k], alpha),
+             shadow, tag);
+        y += row_height;
+    }
+    if (more) {
+        text(draw, body, row_size, ImVec2(left, y), rgba(150, 185, 215, alpha), shadow, std::format("+ {} MORE", broken_bones.size() - most));
+        y += row_height;
+    }
+    if (!rows) {
+        text(draw, body, row_size, ImVec2(left, y), rgba(150, 185, 215, alpha), shadow, "Nothing broken");
+        y += row_height;
+    }
+    y += gap * 3;
+    text(draw, body, footer_size, ImVec2(left, y), rgba(79, 134, 172, alpha), shadow, patient);
 
-    // Over everything, the text too: grain and scratches.
-    for (std::uint32_t k = 0; k < 700; ++k) {
-        const ImVec2 at(origin.x + 3.0f * scale + (panel_width - 6.0f * scale) * wear(2000 + k * 4), end.y - 3.0f * scale - most_height * wear(2001 + k * 4));
-        if (at.y < origin.y + 3.0f * scale) continue;
-        const float size = (0.8f + 1.4f * wear(2002 + k * 4)) * scale, shade = wear(2003 + k * 4);
+    // Over everything: grain, the same for a whole bail.
+    for (std::uint32_t k = 0; k < 420; ++k) {
+        const ImVec2 at(origin.x + 2.0f * scale + (panel_width - 4.0f * scale) * wear(2000 + k * 4),
+                        origin.y + 2.0f * scale + (panel_height - 4.0f * scale) * wear(2001 + k * 4));
+        const float size = (0.8f + 1.2f * wear(2002 + k * 4)) * scale, shade = wear(2003 + k * 4);
         draw->AddRectFilled(at, ImVec2(at.x + size, at.y + size),
-                            shade < 0.55f ? rgba(0, 0, 0, (0.22f + 0.3f * shade) * alpha) : rgba(215, 232, 255, (0.06f + 0.22f * (shade - 0.55f)) * alpha));
-    }
-    for (std::uint32_t k = 0; k < 7; ++k) {
-        const float x = origin.x + 6.0f * scale + (panel_width - 12.0f * scale) * wear(3000 + k * 5);
-        const float bottom = end.y - 4.0f * scale - most_height * wear(3001 + k * 5);
-        const float top = std::max(bottom - (30.0f + 150.0f * wear(3002 + k * 5)) * scale, origin.y + 4.0f * scale);
-        if (bottom - top < 10.0f * scale) continue;
-        const float lean = (wear(3003 + k * 5) - 0.5f) * 14.0f * scale, bend = (wear(3004 + k * 5) - 0.5f) * 6.0f * scale;
-        const ImVec2 scratch[]{ImVec2(x, bottom), ImVec2(x + lean * 0.5f + bend, (top + bottom) * 0.5f), ImVec2(x + lean, top)};
-        draw->AddPolyline(scratch, 3, rgba(215, 235, 255, (0.10f + 0.14f * wear(3005 + k * 5)) * alpha), 0, std::max(1.0f, 0.8f * scale));
+                            shade < 0.6f ? rgba(0, 0, 0, (0.18f + 0.25f * shade) * alpha) : rgba(200, 228, 255, (0.05f + 0.16f * (shade - 0.6f)) * alpha));
     }
     // The border, worn through in places.
-    for (std::size_t i = 0; i < outline.size(); ++i) {
-        const auto &a = outline[i], &b = outline[(i + 1) % outline.size()];
-        const ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-        const auto key = 4000 + static_cast<std::uint32_t>((mid.x - origin.x) / (7.0f * scale)) * 131 + static_cast<std::uint32_t>((end.y - mid.y) / (7.0f * scale));
-        const float worn = wear(key);
-        if (worn < 0.18f) continue;
-        draw->AddLine(a, b, rgba(160, 205, 245, (0.2f + 0.45f * worn) * alpha), std::max(1.0f, 1.4f * scale));
+    const std::array<ImVec2, 4> corners{origin, ImVec2(end.x, origin.y), end, ImVec2(origin.x, end.y)};
+    for (std::size_t side = 0; side < 4; ++side) {
+        const auto &a = corners[side], &b = corners[(side + 1) % 4];
+        const float length_px = length(ImVec2(b.x - a.x, b.y - a.y));
+        const int pieces = std::max(1, static_cast<int>(length_px / (9.0f * scale)));
+        for (int i = 0; i < pieces; ++i) {
+            const float worn = wear(4000 + static_cast<std::uint32_t>(side) * 997 + static_cast<std::uint32_t>(i));
+            if (worn < 0.16f) continue;
+            const float t0 = static_cast<float>(i) / pieces, t1 = static_cast<float>(i + 1) / pieces;
+            draw->AddLine(ImVec2(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0), ImVec2(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1),
+                          rgba(31, 78, 110, (0.55f + 0.45f * worn) * alpha), std::max(1.0f, 1.2f * scale));
+        }
     }
 }
 
@@ -667,7 +643,7 @@ struct Replay {
     struct Kept {
         std::uint64_t id{};
         double moment{};
-        meat::View view; // the skeleton in that picture
+        yard::View view; // the skeleton in that picture
     };
     std::array<Kept, PictureReplay::slots> slots{};
 };
@@ -676,7 +652,7 @@ struct Hold {
     std::uint64_t picture{};
     double kept_at{};
     bool kept{};
-    meat::View view;     // the skeleton as it was in the kept picture
+    yard::View view;     // the skeleton as it was in the kept picture
     Replay replay;
     // What the HUD costs while the picture is jerky (its busiest moment): logged as it ends.
     bool jerky{};
@@ -693,10 +669,10 @@ Hold &hold() {
 }
 } // namespace
 
-FrameHold hall_of_meat_frame_hold() { return hold().frame; }
+FrameHold boneyard_frame_hold() { return hold().frame; }
 void draw_hud();
 
-std::size_t reserve_hall_of_meat_bones(ImFontAtlas &atlas) noexcept {
+std::size_t reserve_boneyard_bones(ImFontAtlas &atlas) noexcept {
     std::size_t reserved{};
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     for (auto &image : images()) {
@@ -718,7 +694,7 @@ std::size_t reserve_hall_of_meat_bones(ImFontAtlas &atlas) noexcept {
     return sheet().atlas ? reserved : 0;
 }
 
-void fill_hall_of_meat_bones(ImFontAtlas &atlas) noexcept {
+void fill_boneyard_bones(ImFontAtlas &atlas) noexcept {
     for (auto &image : images()) {
         if (image.atlas != &atlas || image.rect < 0 || image.rgba.empty()) continue;
         try {
@@ -741,15 +717,15 @@ void fill_hall_of_meat_bones(ImFontAtlas &atlas) noexcept {
     }
 }
 
-bool hall_of_meat_hud_pending() {
-    const auto view = meat::view();
+bool boneyard_hud_pending() {
+    const auto view = yard::view();
     if (view.hidden || Clock::now() - view.published > std::chrono::milliseconds(300)) return false;
-    return (view.xray && view.pose) || view.phase == meat::Phase::bailing ||
-           (view.phase == meat::Phase::results && Clock::now() < view.results_until);
+    return (view.xray && view.pose) || view.phase == yard::Phase::bailing ||
+           (view.phase == yard::Phase::results && Clock::now() < view.results_until);
 }
 
-void draw_hall_of_meat_hud() {
-    DINGO_PROFILE_ZONE("overlay/hall of meat");
+void draw_boneyard_hud() {
+    DINGO_PROFILE_ZONE("overlay/boneyard");
     auto &h = hold();
     const bool was_jerky = h.jerky;
     const auto from = Clock::now();
@@ -765,7 +741,7 @@ void draw_hall_of_meat_hud() {
         c.longest = std::max(c.longest, spent);
     } else if (was_jerky && c.frames) {
         logging::printf(logging::Level::info, logging::Channel::graphics,
-                        "Hall of Meat: bail %llu jerky picture over: %u frames, %u fresh, %u held; the HUD took %.0f us a frame on average, "
+                        "Boneyard: bail %llu jerky picture over: %u frames, %u fresh, %u held; the HUD took %.0f us a frame on average, "
                         "%.0f us at most.",
                         static_cast<unsigned long long>(c.serial), c.frames, c.kept, c.shown, c.total / c.frames, c.longest);
         c = {};
@@ -774,11 +750,11 @@ void draw_hall_of_meat_hud() {
 
 // This frame's part of the replay: which picture to keep, which to show, and how strongly.
 // Returns the one shown, for its skeleton.
-const Replay::Kept *plan_replay(Hold &h, const meat::View &view, double now) {
+const Replay::Kept *plan_replay(Hold &h, const yard::View &view, double now) {
     auto &r = h.replay;
     auto &plan = h.frame.replay;
     plan.ready = view.replay;
-    const bool wanted = view.replay && view.phase == meat::Phase::bailing;
+    const bool wanted = view.replay && view.phase == yard::Phase::bailing;
     if (wanted && view.serial != r.serial) {
         r = {};
         r.serial = view.serial;
@@ -795,7 +771,7 @@ const Replay::Kept *plan_replay(Hold &h, const meat::View &view, double now) {
             auto &slot = r.slots[k];
             if (slot.id && slot.moment >= r.on_screen) continue;
             slot = {++r.ids, t, view};
-            (void)meat::live_camera(slot.view.camera);
+            (void)yard::live_camera(slot.view.camera);
             plan.keep_slot = static_cast<int>(k);
             plan.keep_id = slot.id;
             r.last_kept = t;
@@ -825,7 +801,7 @@ void draw_hud() {
     auto &h = hold();
     h.frame = {};
     h.jerky = false;
-    const auto view = meat::view();
+    const auto view = yard::view();
     const auto steady = Clock::now();
     if (view.hidden || steady - view.published > std::chrono::milliseconds(300)) {
         h.kept = false;
@@ -853,28 +829,23 @@ void draw_hud() {
         f = {};
         f.serial = view.serial;
     }
-    for (std::size_t k = 0; k < meat::bone_count; ++k) {
-        if (meat::broken(view.severity[k]) && view.severity[k] > f.shown[k]) f.at[k] = now;
+    for (std::size_t k = 0; k < yard::bone_count; ++k) {
+        if (yard::broken(view.severity[k]) && view.severity[k] > f.shown[k]) f.at[k] = now;
         f.shown[k] = std::max(f.shown[k], view.severity[k]);
     }
-    if (view.phase == meat::Phase::bailing && f.phase != meat::Phase::bailing) f.results_from = now;
+    if (view.phase == yard::Phase::bailing && f.phase != yard::Phase::bailing) f.results_from = now;
     f.phase = view.phase;
-    // The part of ImGui's display the picture shows. The overlay draws into the swapchain's
-    // buffer at ImGui's display size, the window's client area; a game rendering below its
-    // window's size (1920x1080 stretched over a 3440x1440 screen) shows only the buffer, the
-    // top-left part of that, scaled up to fill the screen. Everything is placed inside it.
-    ImVec2 display = ImGui::GetIO().DisplaySize;
-    if (auto &o = detail::state(); o.swapchain) {
-        DXGI_SWAP_CHAIN_DESC1 description{};
-        if (SUCCEEDED(o.swapchain->GetDesc1(&description)) && description.Width && description.Height)
-            display = ImVec2(std::min(display.x, static_cast<float>(description.Width)),
-                             std::min(display.y, static_cast<float>(description.Height)));
-    }
+    // Everything is placed in ImGui's display, the window's client area, as the rest of the
+    // overlay is. A game drawing a smaller picture than its window (1920x1080 stretched over a
+    // 3440x1440 screen) is the overlay's business: it scales all it draws to the picture once
+    // (fit_to_picture, overlay_render.cpp). Never lay out by the swapchain's size here: that
+    // would scale twice.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
     if (display.x <= 0 || display.y <= 0) return;
     const float scale = std::clamp(display.y / 1080.0f, 0.75f, 2.5f);
     // The result shows all through the bail, and for a moment once the skater is up again.
-    const bool bailing = view.phase == meat::Phase::bailing;
-    const bool showing_result = bailing || (view.phase == meat::Phase::results && steady < view.results_until);
+    const bool bailing = view.phase == yard::Phase::bailing;
+    const bool showing_result = bailing || (view.phase == yard::Phase::results && steady < view.results_until);
     // In over 0.25 s as the bail starts, out over the last 0.6 s after it.
     float alpha = std::clamp(static_cast<float>((now - f.results_from) / 0.25), 0.0f, 1.0f);
     if (!bailing && showing_result)
@@ -882,8 +853,8 @@ void draw_hud() {
     auto *draw = ImGui::GetBackgroundDrawList();
     // The red screen comes and goes with the panel, under the skeleton.
     if (showing_result) draw_vignette(draw, display, alpha);
-    // Only during the bail (or `meat xray always`): it is gone once the skater is up.
-    const auto skeleton = [&](const meat::View &shown, float fade) {
+    // Only during the bail (or `boneyard xray always`): it is gone once the skater is up.
+    const auto skeleton = [&](const yard::View &shown, float fade) {
         const auto &camera = shown.camera;
         if (fade <= 0 || !shown.pose || camera.vertical_fov <= 1 || camera.vertical_fov >= 175) return;
         const auto &m = camera.world;
@@ -893,6 +864,7 @@ void draw_hud() {
         project.back = {m[8], m[9], m[10]};
         project.origin = {m[12], m[13], m[14]};
         project.focal = display.y / (2.0f * std::tan(camera.vertical_fov * 3.14159265f / 360.0f));
+        project.stretch = detail::state().picture_stretch;
         project.centre = ImVec2(display.x * 0.5f, display.y * 0.5f);
         draw_xray(draw, shown, project, now, fade);
     };
@@ -900,7 +872,7 @@ void draw_hud() {
     const bool held = h.frame.action == FrameHold::Action::show && h.view.serial == view.serial;
     if (!held) {
         h.view = view;
-        (void)meat::live_camera(h.view.camera);
+        (void)yard::live_camera(h.view.camera);
     }
     if (view.xray && view.pose) {
         // Replayed, the skeleton of the picture on screen, fading into the live one with it.

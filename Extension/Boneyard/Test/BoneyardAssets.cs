@@ -1,5 +1,5 @@
-// Prepares the Hall of Meat's pictures from the artist's Procreate exports (run from PowerShell:
-// Add-Type -TypeDefinition (Get-Content HomAssets.cs -Raw) -ReferencedAssemblies System.Drawing).
+// Prepares the Boneyard's pictures from the artist's Procreate exports (run from PowerShell:
+// Add-Type -TypeDefinition (Get-Content BoneyardAssets.cs -Raw) -ReferencedAssemblies System.Drawing).
 //  * Strip: the skeleton without its soft glow (the X-ray cuts it into bones; a glow would show
 //    as boxes around each one), its edge kept soft.
 //  * Grid: a crop of a picture on dark grey with a labelled grid, to measure joints by eye.
@@ -11,7 +11,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
-public static class HomAssets {
+public static class BoneyardAssets {
     static byte[] Pixels(Bitmap bmp, out int stride) {
         var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         stride = data.Stride;

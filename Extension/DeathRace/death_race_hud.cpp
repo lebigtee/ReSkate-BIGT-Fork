@@ -1,6 +1,6 @@
 #include "death_race_hud.h"
 #include "death_race.h"
-#include "Extension/HallOfMeat/hall_of_meat.h"
+#include "Extension/Boneyard/boneyard.h"
 #include "Extension/UI/Overlay/overlay_internal.h"
 #include "Engine/Core/Profiling/profiler.h"
 #include <algorithm>
@@ -26,10 +26,11 @@ constexpr double go_shown = 0.9;        // seconds "GO!" stays after the countdo
 
 float dot(const Vec3 &a, const Vec3 &b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 ImU32 rgba(int r, int g, int b, float alpha) { return IM_COL32(r, g, b, static_cast<int>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f)); }
-// The camera's pinhole, as the Hall of Meat's X-ray places bones.
+// The camera's pinhole, as the Boneyard's X-ray places bones.
 struct Projector {
     Vec3 right{}, up{}, back{}, origin{};
     float focal{};
+    float stretch = 1.0f; // the picture stretched across the window (detail::State::picture_stretch)
     ImVec2 centre;
     // Camera space: x right, y up, depth ahead.
     void space(const Vec3 &point, float &x, float &y, float &depth) const {
@@ -42,7 +43,7 @@ struct Projector {
         float x{}, y{};
         space(point, x, y, depth);
         if (depth < 0.1f) return false;
-        out = ImVec2(centre.x + x * focal / depth, centre.y - y * focal / depth);
+        out = ImVec2(centre.x + x * focal * stretch / depth, centre.y - y * focal / depth);
         return true;
     }
 };
@@ -177,12 +178,10 @@ void draw_death_race_hud() {
     const auto v = race::view();
     const auto steady = Clock::now();
     if (v.hidden || steady - v.published > std::chrono::milliseconds(300)) return;
-    ImVec2 display = ImGui::GetIO().DisplaySize;
-    if (auto &o = detail::state(); o.swapchain) {
-        DXGI_SWAP_CHAIN_DESC1 description{};
-        if (SUCCEEDED(o.swapchain->GetDesc1(&description)) && description.Width && description.Height)
-            display = ImVec2(std::min(display.x, static_cast<float>(description.Width)), std::min(display.y, static_cast<float>(description.Height)));
-    }
+    // Placed in ImGui's display, the window's client area: the overlay scales all it draws to a
+    // smaller picture once (fit_to_picture, overlay_render.cpp). Never lay out by the swapchain's
+    // size here: that would scale twice.
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
     if (display.x <= 0 || display.y <= 0) return;
     const float scale = std::clamp(display.y / 1080.0f, 0.75f, 2.5f);
     auto *draw = ImGui::GetBackgroundDrawList();
@@ -190,7 +189,7 @@ void draw_death_race_hud() {
 
     // ---- the flags in the world ----
     auto camera = v.camera;
-    (void)hall_of_meat::live_camera(camera);
+    (void)boneyard::live_camera(camera);
     Projector project;
     const bool seeing = camera.vertical_fov > 1 && camera.vertical_fov < 175;
     if (seeing) {
@@ -200,6 +199,7 @@ void draw_death_race_hud() {
         project.back = {m[8], m[9], m[10]};
         project.origin = {m[12], m[13], m[14]};
         project.focal = display.y / (2.0f * std::tan(camera.vertical_fov * 3.14159265f / 360.0f));
+        project.stretch = detail::state().picture_stretch;
         project.centre = ImVec2(display.x * 0.5f, display.y * 0.5f);
     }
     const auto metres = [&](const Vec3 &p) {

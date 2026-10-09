@@ -3,8 +3,8 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "overlay_internal.h"
 #include "Extension/Trainer/trainer_page.h"
-#include "Extension/HallOfMeat/hall_of_meat_hud.h"
-#include "Extension/HallOfMeat/hall_of_meat_picture.h"
+#include "Extension/Boneyard/boneyard_hud.h"
+#include "Extension/Boneyard/boneyard_picture.h"
 #include "Extension/DeathRace/death_race_hud.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
@@ -81,7 +81,7 @@ void destroy_graphics() {
     s.win32_ready = s.dx12_ready = s.ready = false;
     s.ui_was_interactive = false;
     s.frames.clear();
-    release_hall_of_meat_pictures();
+    release_boneyard_pictures();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -323,13 +323,13 @@ bool setup_graphics() {
     // normally long finished by the time the first frame gets here.
     // Emotes reserve their room before the park previews build the atlas, and fill it after.
     const auto emote_count = reserve_chat_emotes(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
-    const auto bone_sheet = reserve_hall_of_meat_bones(*ImGui::GetIO().Fonts);
+    const auto bone_sheet = reserve_boneyard_bones(*ImGui::GetIO().Fonts);
     const auto preview_count = load_park_previews(*ImGui::GetIO().Fonts, std::chrono::seconds(5));
     fill_chat_emotes(*ImGui::GetIO().Fonts);
-    fill_hall_of_meat_bones(*ImGui::GetIO().Fonts);
+    fill_boneyard_bones(*ImGui::GetIO().Fonts);
     if (!bone_sheet)
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
-            "Hall of Meat: the bone sheet is missing from ReSkate.dll; the X-ray cannot be drawn.");
+            "Boneyard: the bone sheet is missing from ReSkate.dll; the X-ray cannot be drawn.");
     if (emote_count)
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Chat emotes: %zu ready.", emote_count);
@@ -494,7 +494,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
-    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || hall_of_meat_hud_pending() || death_race_hud_pending();
+    const bool perf_frame = perf_hud_pending() || trainer_hud_pending() || boneyard_hud_pending() || death_race_hud_pending();
     if (trainer_open_requested()) s.visible.store(true);
     const bool menu_frame = interactive_visible(s);
     if (!menu_frame) {
@@ -564,7 +564,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_perf_hud();
     draw_trainer_hud();
     draw_death_race_hud();
-    draw_hall_of_meat_hud();
+    draw_boneyard_hud();
     draw_notices();
     draw_chat();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
@@ -586,7 +586,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     if (FAILED(frame.allocator->Reset()) || FAILED(s.commands->Reset(frame.allocator.Get(), nullptr))) {
         ImGui::SetCurrentContext(previous); s.failed = true; restore_input(true); return;
     }
-    hall_of_meat_picture({s.device.Get(), s.commands.Get(), frame.buffer.Get(), frame.rtv, completed(s.next_fence, 0)});
+    boneyard_picture({s.device.Get(), s.commands.Get(), frame.buffer.Get(), frame.rtv, completed(s.next_fence, 0)});
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = frame.buffer.Get();

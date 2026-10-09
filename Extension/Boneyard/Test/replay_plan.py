@@ -1,6 +1,6 @@
-# Simulates the Hall of Meat replay plan (hall_of_meat_hud.cpp, plan_replay): how many of the
+# Simulates the Boneyard replay plan (boneyard_hud.cpp, plan_replay): how many of the
 # slots wait to be shown at various frame rates, and how many distinct pictures reach the screen.
-# Keep the constants in step with hall_of_meat_hud.cpp and hall_of_meat_replay.h. usage: py replay_plan.py
+# Keep the constants in step with boneyard_hud.cpp and boneyard_replay.h. usage: py replay_plan.py
 SLOTS = 24
 import math
 stutter = 1/40; rin, fade, end, speed = 0.12, 0.72, 1.02, 0.5

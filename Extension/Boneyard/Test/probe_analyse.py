@@ -1,4 +1,4 @@
-# Reads the Hall of Meat's probe recordings (`meat probe on`, hall_of_meat.cpp) and looks for the
+# Reads the Boneyard's probe recordings (`boneyard probe on`, boneyard.cpp) and looks for the
 # game's own per-body-part contact records in them:
 #   - which vec4 fields of the 24 records (and of the per-part vectors) are world positions, and of
 #     which skeleton point (so each record is a body part);

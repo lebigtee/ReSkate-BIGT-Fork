@@ -1,12 +1,12 @@
 #pragma once
-// The Hall of Meat: skate 3's bail mini-game. Bail, and see which bones you broke.
+// The Boneyard: skate 3's bail mini-game. Bail, and see which bones you broke.
 //
-// The game thread (hall_of_meat.cpp) watches the local skater. The no-bail hook's physics state
+// The game thread (boneyard.cpp) watches the local skater. The no-bail hook's physics state
 // watch, or the skeleton itself (a hard hit, then a body no longer upright), says when a bail
 // starts; the animation pose (the 395-joint AnimBase skeleton, composed into world space the way
 // first person does) says how hard each part of the body hit something: the speed it lost at
-// once. The overlay (hall_of_meat_hud.cpp) draws skate 3's X-ray over the skater from the
-// snapshot published here (hall_of_meat_view.cpp); every setting is a `meat` console command.
+// once. The overlay (boneyard_hud.cpp) draws skate 3's X-ray over the skater from the
+// snapshot published here (boneyard_view.cpp); every setting is a `boneyard` console command.
 #include "Engine/Game/UI/game_view.h"
 #include <array>
 #include <chrono>
@@ -15,7 +15,7 @@
 #include <string_view>
 #include <vector>
 
-namespace dingosdk::hall_of_meat {
+namespace dingosdk::boneyard {
 using Vec3 = std::array<float, 3>;
 
 // The points of the body that are followed: skeleton joints, and the top of the skull (a point
@@ -86,6 +86,7 @@ struct View {
     Phase phase{};
     std::uint64_t serial{}; // bails seen this session
     bool xray{true};        // draw the skeleton over the skater
+    bool glow{true};        // with a glow round its bones, as on a lit film
     bool hidden{};          // a game menu is up
     bool pose{};            // `points` hold this tick's skeleton
     std::array<Vec3, point_count> points{};
@@ -99,7 +100,7 @@ struct View {
     GameView camera;        // the client's camera this tick
     std::chrono::steady_clock::time_point published, results_until;
 };
-// Thread-safe snapshot (hall_of_meat_view.cpp, part of the overlay).
+// Thread-safe snapshot (boneyard_view.cpp, part of the overlay).
 View view() noexcept;
 void publish(const View &) noexcept;
 // The game moves its camera after the client tick the view was taken in, so the overlay reads
@@ -108,14 +109,14 @@ using LiveCamera = bool (*)(GameView &) noexcept;
 void set_live_camera(LiveCamera) noexcept;
 bool live_camera(GameView &) noexcept;
 
-// Game thread (hall_of_meat.cpp).
+// Game thread (boneyard.cpp).
 // Each client tick; `playing` while a local skater can exist.
 void tick(std::uintptr_t base, std::uintptr_t client, bool playing) noexcept;
-// Runs one `meat` command and returns the line to print. Only from the console dispatcher.
+// Runs one `boneyard` command and returns the line to print. Only from the console dispatcher.
 std::string command(std::string_view verb, const std::vector<std::string> &arguments);
 // The settings the game's pause menu shows (CUSTOM STUFF > PLAYER, native_tools_view.h).
 struct Status {
-    bool enabled{}, slowmo{}, stutter{};
+    bool enabled{}, slowmo{}, stutter{}, glow{};
 };
 Status status() noexcept;
-} // namespace dingosdk::hall_of_meat
+} // namespace dingosdk::boneyard

@@ -1,7 +1,7 @@
-# The Hall of Meat's skeleton drawings, measured: for each view (assets/skeleton front|back|side,
+# The Boneyard's skeleton drawings, measured: for each view (assets/skeleton front|back|side,
 # 1024 x 1536 as drawn), each bone's two joints and the box its art fills, in the drawing's own
-# pixels. Prints the sprite tables for hall_of_meat_hud.cpp (`cpp`) and the cut-out quads to
-# check them over the drawings (`quads`, read by HomAssets.Overlay).
+# pixels. Prints the sprite tables for boneyard_hud.cpp (`cpp`) and the cut-out quads to
+# check them over the drawings (`quads`, read by BoneyardAssets.Overlay).
 # usage: py skeleton_spec.py cpp|quads|mask (the profile's arm, as four corners a line)
 import math, sys
 
@@ -60,7 +60,7 @@ ARM_MASK = [((480, 330), (500, 615), (14, 4, 22, 22)), ((500, 625), (548, 805), 
 
 
 def extents(a, b, art):
-    """before, after, left, right as hall_of_meat_hud.cpp's Sprite has them."""
+    """before, after, left, right as boneyard_hud.cpp's Sprite has them."""
     dx, dy = b[0] - a[0], b[1] - a[1]
     length = math.hypot(dx, dy)
     d = (dx / length, dy / length)
@@ -96,7 +96,7 @@ if __name__ == '__main__':
             # The drawings in the sheet: front, back, the profile's arm, and the profile without it.
             picture = {'front': 0, 'back': 1}.get(view, 2 if name in SIDE_ARM else 3)
             if what == 'cpp':
-                print(f'    {{meat::{p}, meat::{q}, {bone}, {picture}, {{{a[0]}, {a[1]}}}, {{{b[0]}, {b[1]}}}, '
+                print(f'    {{yard::{p}, yard::{q}, {bone}, {picture}, {{{a[0]}, {a[1]}}}, {{{b[0]}, {b[1]}}}, '
                       f'{e[0]:.0f}, {e[1]:.0f}, {e[2]:.0f}, {e[3]:.0f}, Breadth::{breadth}, {"true" if twin else "false"}}}, // {name}')
             elif what == 'quads':
                 pts = quad(a, b, e)

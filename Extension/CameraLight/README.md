@@ -42,7 +42,7 @@ The light's values (`lamp_*` in `camera_light_native.cpp`) were tuned in play. T
 the light entity's transform setter belong to this build of the game:
 `Engine/Game/Build/20260929/camera_light.h`, whose setter is checked by its code before use. The
 spot light data's fields and their offsets (`Color` at +0x90 among them) come from
-`dingosdk_hall_of_meat_skeleton_dump <Skate folder> --dump Lighting/Prefabs/Character/PF_LightRig_Ambient`.
+`dingosdk_boneyard_skeleton_dump <Skate folder> --dump Lighting/Prefabs/Character/PF_LightRig_Ambient`.
 
 `light status` and the pause menu read `camera_light.cpp`, which keeps the settings in
 `%LOCALAPPDATA%\ReSkate\cameralight.json`.
